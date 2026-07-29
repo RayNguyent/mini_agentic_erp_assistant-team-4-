@@ -1,6 +1,7 @@
 import pytest
 
 from app.errors import NotFoundError, ToolTimeoutError
+from app.providers.intent_classifier import make_llm_classifier
 from app.runtime import execute_write_tool, parse_intent, resume, route_decision, run
 from app.state import NextAction
 
@@ -118,6 +119,42 @@ def test_run_unsupported_request_is_clean_refusal():
     assert state.error_code == "UNSUPPORTED_INTENT"
     assert state.tool_output is None
     assert state.answer
+
+
+# --- LLM-backed classifier wiring -------------------------------------------
+
+
+class _FakeLLMProvider:
+    def __init__(self, response: str):
+        self._response = response
+
+    def generate(self, prompt, *, system=None):
+        return self._response
+
+
+def test_run_with_llm_backed_classifier_routes_like_the_default_one():
+    provider = _FakeLLMProvider('{"intent": "project_status", "project_code": "PRJ-001"}')
+    classify = make_llm_classifier(provider)
+    registry = FakeRegistry(
+        {"get_project_status": lambda inp: {"project_code": inp["project_code"], "stage": "Build"}}
+    )
+
+    state = run("Tell me about PRJ-001", registry, classify=classify)
+
+    assert state.next_action == NextAction.DONE
+    assert state.selected_tool == "get_project_status"
+    assert state.tool_output == {"project_code": "PRJ-001", "stage": "Build"}
+
+
+def test_run_with_llm_backed_classifier_falls_back_when_provider_misbehaves():
+    provider = _FakeLLMProvider("not valid json")
+    classify = make_llm_classifier(provider)
+    registry = FakeRegistry({"get_project_status": lambda inp: {"stage": "Build"}})
+
+    state = run("What's the status of PRJ-001?", registry, classify=classify)
+
+    assert state.next_action == NextAction.DONE
+    assert state.selected_tool == "get_project_status"
 
 
 # --- Retry logic --------------------------------------------------------------

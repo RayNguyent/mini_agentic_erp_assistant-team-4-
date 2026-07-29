@@ -16,6 +16,16 @@ class NextAction(str, Enum):
     DONE = "done"
 
 
+class IntentType(str, Enum):
+    """The closed set of intents any classifier (rule-based or LLM-backed)
+    may produce. Mirrors app.runtime.READ_TOOLS / WRITE_TOOLS keys."""
+
+    PROJECT_STATUS = "project_status"
+    LIST_RISKS = "list_risks"
+    CREATE_RISK = "create_risk"
+    UNSUPPORTED = "unsupported"
+
+
 class AgentState(BaseModel):
     intent: str
     selected_tool: str | None = None
