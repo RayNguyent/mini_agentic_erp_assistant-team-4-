@@ -1,0 +1,23 @@
+[
+  {
+    "project_code": "PRJ-001",
+    "name": "ERP Platform Rollout",
+    "stage": "Build",
+    "owner": "Alice Tran",
+    "status_summary": "On track; sprint 4 of 6 in progress."
+  },
+  {
+    "project_code": "PRJ-002",
+    "name": "Warehouse Automation",
+    "stage": "Discovery",
+    "owner": "Minh Pham",
+    "status_summary": "Requirements gathering underway with stakeholders."
+  },
+  {
+    "project_code": "PRJ-003",
+    "name": "Finance Module Migration",
+    "stage": "UAT",
+    "owner": "Bao Nguyen",
+    "status_summary": "User acceptance testing in its final week; two blockers open."
+  }
+]
