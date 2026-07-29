@@ -1,0 +1,16 @@
+[project]
+name = "mini-agentic-erp-assistant"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.140.13",
+    "pydantic>=2.13.4",
+    "uvicorn>=0.51.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
