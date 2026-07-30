@@ -1,0 +1,29 @@
+[
+  {
+    "id": "RISK-1",
+    "project_code": "PRJ-001",
+    "title": "Vendor API rate limits",
+    "severity": "medium",
+    "status": "Open",
+    "description": "Third-party ERP connector throttles bulk syncs above 500 req/min.",
+    "created_at": "2026-06-01T09:00:00Z"
+  },
+  {
+    "id": "RISK-2",
+    "project_code": "PRJ-001",
+    "title": "Key engineer on leave",
+    "severity": "low",
+    "status": "Mitigated",
+    "description": "Backup engineer onboarded and pairing since sprint 3.",
+    "created_at": "2026-06-10T14:30:00Z"
+  },
+  {
+    "id": "RISK-3",
+    "project_code": "PRJ-003",
+    "title": "Legacy data schema mismatch",
+    "severity": "high",
+    "status": "Open",
+    "description": "General ledger export format differs from the new module's import contract.",
+    "created_at": "2026-07-02T11:15:00Z"
+  }
+]
