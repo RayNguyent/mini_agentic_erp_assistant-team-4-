@@ -17,6 +17,44 @@ The architecture is intentionally designed so that most components can be reused
 
 ---
 
+# Running the App
+
+Two processes: the FastAPI backend and the Next.js frontend. Run both, in separate terminals.
+
+## Backend (FastAPI)
+
+Requires [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv run uvicorn app.api.main:app --reload --port 8000
+```
+
+- API: http://127.0.0.1:8000
+- Interactive docs: http://127.0.0.1:8000/docs
+- Health check: http://127.0.0.1:8000/health
+
+## Frontend (Next.js chat UI)
+
+```bash
+cd frontend
+npm install   # first time only
+npm run dev
+```
+
+- UI: http://localhost:3000
+
+The frontend calls the backend directly at `http://127.0.0.1:8000` (see `frontend/lib/api.ts`; override with a `NEXT_PUBLIC_API_URL` env var if the backend runs elsewhere). The backend's CORS config in `app/api/main.py` allows `http://localhost:3000`.
+
+With both running, open http://localhost:3000 and try the [demo scenarios](#demo-scenarios) below — e.g. `What's the status of PRJ-001?` or `Create a risk for PRJ-001`. Responses stream in token-by-token, and write actions (like `create_risk`) surface an inline Approve/Reject card before running.
+
+## Running tests
+
+```bash
+uv run pytest
+```
+
+---
+
 # MVP Scope
 
 ## Read Tools

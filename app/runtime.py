@@ -13,7 +13,20 @@ WRITE_TOOLS = {
     "create_risk": "create_risk",
 }
 
-_PROJECT_CODE_RE = re.compile(r"[A-Z]{2,}-\d+")
+_PROJECT_CODE_RE = re.compile(r"[A-Za-z]{2,}[\s_-]?\d+")
+_PROJECT_CODE_PARTS_RE = re.compile(r"([A-Za-z]{2,})[\s_-]?(\d+)")
+
+
+def _normalize_project_code(code: str) -> str:
+    """Canonicalize any extracted project code to LETTERS-DIGITS form (e.g.
+    "prj 001", "PRJ_001", "PRJ001" -> "PRJ-001"), regardless of whether the
+    deterministic regex or an LLM classifier produced it — tool execution
+    always looks projects up by this exact canonical key (app/tools/erp_tools.py)."""
+    match = _PROJECT_CODE_PARTS_RE.match(code.strip())
+    if not match:
+        return code
+    letters, digits = match.groups()
+    return f"{letters.upper()}-{digits}"
 
 
 class ToolFn(Protocol):
@@ -27,18 +40,20 @@ class ToolRegistry(Protocol):
 
 
 class IntentClassifier(Protocol):
-    def __call__(self, message: str) -> tuple[str, dict]: ...
+    def __call__(self, message: str, history: list[dict] | None = None) -> tuple[str, dict]: ...
 
 
-def default_classify(message: str) -> tuple[str, dict]:
+def default_classify(message: str, history: list[dict] | None = None) -> tuple[str, dict]:
     """Deterministic, offline keyword classifier.
 
     Placeholder for parse_intent until an LLMProvider-backed classifier is
     wired in; keeps the runtime demoable without an external dependency.
+    `history` is accepted (to match IntentClassifier) but unused — this
+    classifier has no way to reason over prior turns.
     """
     lowered = message.lower()
     match = _PROJECT_CODE_RE.search(message.upper())
-    project_code = match.group(0) if match else None
+    project_code = _normalize_project_code(match.group(0)) if match else None
 
     if "risk" in lowered and any(w in lowered for w in ("create", "add", "log", "new")):
         intent = "create_risk"
@@ -53,6 +68,23 @@ def default_classify(message: str) -> tuple[str, dict]:
     return intent, tool_input
 
 
+def _infer_intent_from_history(history: list[dict] | None) -> str | None:
+    """If the classifier declined to infer a follow-up from context, fall
+    back to reusing the last read-tool intent from the conversation so a
+    bare "how about PRJ-003?" still resolves. Deliberately excludes
+    create_risk — a write action should never be inferred from an ambiguous
+    follow-up, only from an explicit request."""
+    if not history:
+        return None
+    for turn in reversed(history):
+        if turn.get("role") != "user":
+            continue
+        intent, _ = default_classify(turn.get("content", ""))
+        if intent in READ_TOOLS:
+            return intent
+    return None
+
+
 def _evolve(state: AgentState, **updates) -> AgentState:
     """Build the next state through the constructor (not model_copy) so
     AgentState's validators actually run on every transition."""
@@ -61,8 +93,20 @@ def _evolve(state: AgentState, **updates) -> AgentState:
     return AgentState(**data)
 
 
-def parse_intent(message: str, classify: IntentClassifier = default_classify) -> AgentState:
-    intent, tool_input = classify(message)
+def parse_intent(
+    message: str,
+    classify: IntentClassifier = default_classify,
+    history: list[dict] | None = None,
+) -> AgentState:
+    intent, tool_input = classify(message, history)
+
+    if intent == "unsupported":
+        code_match = _PROJECT_CODE_RE.search(message.upper())
+        carried_intent = _infer_intent_from_history(history) if code_match else None
+        if carried_intent:
+            intent = carried_intent
+            tool_input = {"project_code": _normalize_project_code(code_match.group(0))}
+
     return AgentState(
         intent=intent,
         tool_input=tool_input or None,
@@ -102,10 +146,14 @@ def _run_tool_with_retry(state: AgentState, tool_registry: ToolRegistry) -> Agen
             error_message=f"No tool registered for '{state.selected_tool}'.",
         )
 
+    tool_input = state.tool_input or {}
+    if isinstance(tool_input.get("project_code"), str):
+        tool_input = {**tool_input, "project_code": _normalize_project_code(tool_input["project_code"])}
+
     retry_count = state.retry_count
     while True:
         try:
-            output = tool_fn(state.tool_input or {})
+            output = tool_fn(tool_input)
             return _evolve(
                 state,
                 tool_output=output,
@@ -151,9 +199,48 @@ def execute_write_tool(state: AgentState, tool_registry: ToolRegistry) -> AgentS
     return _run_tool_with_retry(state, tool_registry)
 
 
+def _render_project_status(output: dict) -> str:
+    return (
+        f"Project {output.get('project_code', '?')} — {output.get('name', '?')}\n"
+        f"• Stage: {output.get('stage', '?')}\n"
+        f"• Owner: {output.get('owner', '?')}\n"
+        f"• Status: {output.get('status_summary', '?')}"
+    )
+
+
+def _render_risk(risk: dict) -> str:
+    return f"• [{risk.get('id', '?')}] {risk.get('title', '?')} ({risk.get('severity', '?')}) — {risk.get('status', '?')}"
+
+
+def _render_list_risks(output: dict) -> str:
+    risks = output.get("risks", [])
+    if not risks:
+        return f"No risks recorded for {output.get('project_code', '?')}."
+    header = f"Risks for {output.get('project_code', '?')}:"
+    return "\n".join([header, *(_render_risk(risk) for risk in risks)])
+
+
+def _render_create_risk(output: dict) -> str:
+    return (
+        f"Risk created for {output.get('project_code', '?')}:\n"
+        f"• Title: {output.get('title', '?')}\n"
+        f"• Severity: {output.get('severity', '?')}\n"
+        f"• Status: {output.get('status', '?')}"
+    )
+
+
+_TOOL_RENDERERS = {
+    "get_project_status": _render_project_status,
+    "list_risks": _render_list_risks,
+    "create_risk": _render_create_risk,
+}
+
+
 def _render_tool_output(tool_name: str | None, output: dict) -> str:
-    # Placeholder rendering; refine once app/tools output shapes are final.
-    return f"{tool_name}: {output}"
+    renderer = _TOOL_RENDERERS.get(tool_name or "")
+    if renderer is None:
+        return f"{tool_name}: {output}"
+    return renderer(output)
 
 
 def format_response(state: AgentState) -> AgentState:
@@ -174,10 +261,11 @@ def run(
     message: str,
     tool_registry: ToolRegistry,
     classify: IntentClassifier = default_classify,
+    history: list[dict] | None = None,
 ) -> AgentState:
     """Drive a request from raw message through to a final or
     approval-pending AgentState."""
-    state = parse_intent(message, classify)
+    state = parse_intent(message, classify, history)
     state = route_decision(state)
 
     if state.next_action == NextAction.EXECUTE_READ_TOOL:

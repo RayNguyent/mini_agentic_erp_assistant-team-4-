@@ -24,6 +24,61 @@ def test_parse_intent_extracts_project_code():
     assert state.next_action == NextAction.ROUTE_DECISION
 
 
+@pytest.mark.parametrize("message", ["status of PRJ 001", "status of PRJ_001", "status of prj001"])
+def test_parse_intent_normalizes_project_code_format_drift(message):
+    state = parse_intent(message)
+    assert state.tool_input == {"project_code": "PRJ-001"}
+
+
+def test_run_normalizes_project_code_before_calling_tool():
+    calls = []
+    registry = FakeRegistry(
+        {"get_project_status": lambda inp: calls.append(inp) or {"project_code": inp["project_code"]}}
+    )
+    run("status of PRJ 001", registry)
+    assert calls == [{"project_code": "PRJ-001"}]
+
+
+# --- Carry-forward intent from history when the classifier declines --------
+
+
+def test_parse_intent_carries_forward_read_intent_from_history_on_bare_followup():
+    history = [
+        {"role": "user", "content": "what is the status of prj 001"},
+        {"role": "assistant", "content": "Project PRJ-001 — ERP Platform Rollout"},
+    ]
+
+    def declining_classify(message, history=None):
+        return "unsupported", {}
+
+    state = parse_intent("how about prj 002", classify=declining_classify, history=history)
+
+    assert state.intent == "project_status"
+    assert state.tool_input == {"project_code": "PRJ-002"}
+
+
+def test_parse_intent_does_not_carry_forward_create_risk():
+    history = [{"role": "user", "content": "create a risk for prj 001"}]
+
+    def declining_classify(message, history=None):
+        return "unsupported", {}
+
+    state = parse_intent("how about prj 002", classify=declining_classify, history=history)
+
+    assert state.intent == "unsupported"
+
+
+def test_parse_intent_does_not_carry_forward_without_a_project_code_in_the_new_message():
+    history = [{"role": "user", "content": "what is the status of prj 001"}]
+
+    def declining_classify(message, history=None):
+        return "unsupported", {}
+
+    state = parse_intent("what about it", classify=declining_classify, history=history)
+
+    assert state.intent == "unsupported"
+
+
 def test_route_decision_selects_read_tool():
     state = parse_intent("Show all risks for PRJ-001")
     state = route_decision(state)
@@ -60,6 +115,82 @@ def test_run_read_tool_success():
     assert state.selected_tool == "get_project_status"
     assert state.error_code is None
     assert state.answer is not None
+
+
+def test_project_status_answer_is_rendered_as_bullets():
+    registry = FakeRegistry(
+        {
+            "get_project_status": lambda inp: {
+                "project_code": "PRJ-001",
+                "name": "ERP Platform Rollout",
+                "stage": "Build",
+                "owner": "Alice Tran",
+                "status_summary": "On track.",
+            }
+        }
+    )
+    state = run("What's the status of PRJ-001?", registry)
+    assert state.answer == (
+        "Project PRJ-001 — ERP Platform Rollout\n"
+        "• Stage: Build\n"
+        "• Owner: Alice Tran\n"
+        "• Status: On track."
+    )
+
+
+def test_list_risks_answer_is_rendered_as_bullets():
+    registry = FakeRegistry(
+        {
+            "list_risks": lambda inp: {
+                "project_code": "PRJ-001",
+                "risks": [
+                    {
+                        "id": "RISK-1",
+                        "title": "Scope creep",
+                        "severity": "medium",
+                        "status": "open",
+                    }
+                ],
+            }
+        }
+    )
+    state = run("Show all risks for PRJ-001", registry)
+    assert state.answer == (
+        "Risks for PRJ-001:\n• [RISK-1] Scope creep (medium) — open"
+    )
+
+
+def test_list_risks_answer_reports_when_empty():
+    registry = FakeRegistry(
+        {"list_risks": lambda inp: {"project_code": "PRJ-001", "risks": []}}
+    )
+    state = run("Show all risks for PRJ-001", registry)
+    assert state.answer == "No risks recorded for PRJ-001."
+
+
+def test_create_risk_answer_is_rendered_as_bullets():
+    calls = []
+    registry = FakeRegistry(
+        {
+            "create_risk": lambda inp: calls.append(inp)
+            or {
+                "id": "RISK-1",
+                "project_code": "PRJ-001",
+                "title": "Scope creep",
+                "severity": "medium",
+                "status": "open",
+            }
+        }
+    )
+    state = run("Create a risk for PRJ-001", registry)
+    state = state.model_copy(update={"approved": True})
+    state = resume(state, registry)
+    assert state.answer == (
+        "Risk created for PRJ-001:\n"
+        "• Title: Scope creep\n"
+        "• Severity: medium\n"
+        "• Status: open"
+    )
 
 
 # --- Scenario 2: write tool, approval flow ----------------------------------
@@ -128,7 +259,7 @@ class _FakeLLMProvider:
     def __init__(self, response: str):
         self._response = response
 
-    def generate(self, prompt, *, system=None):
+    def generate(self, prompt, *, system=None, history=None):
         return self._response
 
 
