@@ -27,15 +27,22 @@ Respond with ONLY a JSON object of this exact shape, no other text:
 """
 
 
-_TOOL_CALL_SYSTEM_PROMPT = """You are a routing assistant for a project-management ERP agent.
-Call exactly one of the available tools that best matches the user's request, filling in
-every required argument from the conversation. If none of the tools apply, do not call
-any tool. Use prior turns in the conversation to resolve follow-ups: if the user's message
-is just a bare project code or a short phrase like "how about X" / "what about X" with no
-other detail, treat it as a repeat of the SAME tool call as the immediately preceding turn,
-just with the new project code substituted in.
-When filling project_code, use the canonical LETTERS-DIGITS form (e.g. PRJ-001) even if
-the user wrote it differently (e.g. "prj 001" or "PRJ_001").
+_TOOL_CALL_SYSTEM_PROMPT = """You are an intelligent routing assistant for an ERP project management system.
+
+Your job is to understand what the user wants and call exactly one tool that matches their intent:
+
+TOOLS AVAILABLE:
+- get_project_status: When user asks to CHECK, VIEW, LOOK UP, or GET STATUS of a project
+- list_risks: When user asks to VIEW, LIST, SHOW, or SEE risks for a project
+- create_risk: When user wants to ADD, CREATE, LOG, RECORD, or SUBMIT a NEW risk to a project
+
+IMPORTANT:
+- If the user wants to MODIFY/WRITE/CREATE something, use create_risk
+- If the user just wants to VIEW/READ/LIST information, use get_project_status or list_risks
+- If none apply, do NOT call any tool
+- Extract project codes from context (e.g., "project 2" → "PRJ-002", "PRJ-001" stays "PRJ-001")
+- Always pad project numbers to 3 digits (2 → 002, 001 → 001)
+- Use prior conversation to resolve follow-ups: "How about PRJ-003?" repeats the previous tool with new project
 """
 
 _TOOL_NAME_TO_INTENT = {**{v: k for k, v in READ_TOOLS.items()}, **{v: k for k, v in WRITE_TOOLS.items()}}
@@ -69,17 +76,11 @@ def make_llm_classifier(
     return classify
 
 
-def make_tool_calling_classifier(
-    provider: LLMProvider, fallback: IntentClassifier = default_classify
-) -> IntentClassifier:
+def make_tool_calling_classifier(provider: LLMProvider) -> IntentClassifier:
     """Wraps an LLMProvider's tool-calling ability as an IntentClassifier.
 
-    Unlike make_llm_classifier (which only ever extracts intent +
-    project_code via a JSON-shaped prompt), this hands the model the real
-    tool schemas from app.tools.specs and lets it fill in every argument
-    directly — e.g. create_risk's risk_payload (title/severity/description)
-    — so the resulting tool_input is ready to execute without a second
-    round-trip to collect missing fields.
+    Hands the model the real tool schemas and trusts its decision-making.
+    Only falls back to unsupported if the model declines or errors.
     """
     tools = get_openai_tool_specs()
 
@@ -89,19 +90,19 @@ def make_tool_calling_classifier(
                 message, tools=tools, system=_TOOL_CALL_SYSTEM_PROMPT, history=history
             )
         except ToolError as exc:
-            logger.info("intent classifier fallback: reason=provider_error error=%s", exc)
-            return fallback(message, history)
+            logger.warning("LLM provider error: %s (returning unsupported)", exc)
+            return "unsupported", {}
 
         if call is None:
-            logger.info("intent classified: intent=unsupported tool_input={} (model declined to call a tool)")
+            logger.info("LLM declined to call any tool")
             return "unsupported", {}
 
         intent = _TOOL_NAME_TO_INTENT.get(call.name)
         if intent is None:
-            logger.info("intent classifier fallback: reason=unknown_tool_name tool_name=%s", call.name)
-            return fallback(message, history)
+            logger.warning("LLM called unknown tool: %s (returning unsupported)", call.name)
+            return "unsupported", {}
 
-        logger.info("intent classified: intent=%s tool_input=%s", intent, call.arguments)
+        logger.info("LLM classified: intent=%s project_code=%s", intent, call.arguments.get("project_code"))
         return intent, call.arguments
 
     return classify

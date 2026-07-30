@@ -24,12 +24,27 @@ def _normalize_project_code(code: str) -> str:
     """Canonicalize any extracted project code to LETTERS-DIGITS form (e.g.
     "prj 001", "PRJ_001", "PRJ001" -> "PRJ-001"), regardless of whether the
     deterministic regex or an LLM classifier produced it — tool execution
-    always looks projects up by this exact canonical key (app/tools/erp_tools.py)."""
+    always looks projects up by this exact canonical key (app/tools/erp_tools.py).
+
+    Also handles variations like "project 2" -> "PRJ-002", "prj-2" -> "PRJ-002".
+    """
     match = _PROJECT_CODE_PARTS_RE.match(code.strip())
     if not match:
         return code
     letters, digits = match.groups()
-    return f"{letters.upper()}-{digits}"
+
+    # Normalize "project" or "proj" variations to "PRJ"
+    letters_upper = letters.upper()
+    if letters_upper.startswith("PROJECT"):
+        letters_upper = "PRJ"
+    elif letters_upper.startswith("PROJ"):
+        letters_upper = "PRJ"
+
+    # Pad digits to 3 digits if using PRJ prefix (e.g., "2" -> "002")
+    if letters_upper == "PRJ" and len(digits) < 3:
+        digits = digits.zfill(3)
+
+    return f"{letters_upper}-{digits}"
 
 
 class ToolFn(Protocol):
