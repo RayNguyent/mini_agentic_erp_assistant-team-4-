@@ -16,6 +16,7 @@ from app.api.schemas import (
     ChatResponse,
     HealthResponse,
     RejectRequest,
+    RiskDraft,
 )
 from app.approvals.store import ApprovalStore
 from app.providers.base import LLMProvider
@@ -60,6 +61,47 @@ def _finished_response(state: AgentState) -> ChatResponse:
     )
 
 
+def _as_text(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _risk_draft(state: AgentState) -> RiskDraft | None:
+    """Seed the approval form from the pending state, so fields the user
+    already mentioned come back filled in and only the gaps need typing."""
+    if state.selected_tool != "create_risk":
+        return None
+    tool_input = state.tool_input or {}
+    payload = tool_input.get("risk_payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    # A pre-fill is a convenience, never a source of truth — anything the model
+    # got wrong (odd severity, non-string title) falls back to a blank field
+    # for the user to correct rather than failing the response.
+    severity = payload.get("severity")
+    return RiskDraft(
+        project_code=_as_text(tool_input.get("project_code")),
+        title=_as_text(payload.get("title")),
+        severity=severity if severity in ("low", "medium", "high") else "medium",
+        description=_as_text(payload.get("description")),
+    )
+
+
+def _approval_response(state: AgentState, approval_id: str) -> ChatResponse:
+    draft = _risk_draft(state)
+    answer = (
+        "Fill in the risk details below, then approve to create it."
+        if draft is not None
+        else f"'{state.selected_tool}' requires approval before it runs."
+    )
+    return ChatResponse(
+        answer=answer,
+        tool_used=state.selected_tool,
+        approval_required=True,
+        approval_id=approval_id,
+        risk_draft=draft,
+    )
+
+
 def _as_history(request: ChatRequest) -> list[dict] | None:
     return [turn.model_dump() for turn in request.history] if request.history else None
 
@@ -86,13 +128,7 @@ def chat(
     )
 
     if state.next_action == NextAction.AWAIT_APPROVAL:
-        approval_id = store.create(state)
-        return ChatResponse(
-            answer=f"'{state.selected_tool}' requires approval before it runs.",
-            tool_used=state.selected_tool,
-            approval_required=True,
-            approval_id=approval_id,
-        )
+        return _approval_response(state, store.create(state))
 
     return _finished_response(state)
 
@@ -120,13 +156,7 @@ def chat_stream(
     )
 
     if state.next_action == NextAction.AWAIT_APPROVAL:
-        approval_id = store.create(state)
-        payload = ChatResponse(
-            answer=f"'{state.selected_tool}' requires approval before it runs.",
-            tool_used=state.selected_tool,
-            approval_required=True,
-            approval_id=approval_id,
-        )
+        payload = _approval_response(state, store.create(state))
     else:
         payload = _finished_response(state)
 

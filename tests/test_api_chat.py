@@ -28,6 +28,34 @@ def test_create_risk_scenario_requires_approval(client):
     assert body["approval_id"]
 
 
+def test_bare_create_risk_request_goes_straight_to_the_approval_form(client):
+    """No project, title, or severity given — the user must still get the form
+    to fill in rather than a chat reply asking for those details."""
+    response = client.post("/chat", json={"message": "add a risk"})
+
+    body = response.json()
+    assert body["tool_used"] == "create_risk"
+    assert body["approval_required"] is True
+    assert body["risk_draft"] == {
+        "project_code": "",
+        "title": "",
+        "severity": "medium",
+        "description": "",
+    }
+
+
+def test_create_risk_draft_prefills_what_the_user_already_said(client):
+    response = client.post("/chat", json={"message": "Create a risk for PRJ-001"})
+
+    assert response.json()["risk_draft"]["project_code"] == "PRJ-001"
+
+
+def test_read_only_requests_carry_no_risk_draft(client):
+    response = client.post("/chat", json={"message": "Show all risks for PRJ-001"})
+
+    assert response.json()["risk_draft"] is None
+
+
 def test_unsupported_request_scenario_is_a_clean_refusal(client):
     response = client.post("/chat", json={"message": "What's the weather today?"})
 

@@ -1,3 +1,4 @@
+import json
 import logging
 
 from pydantic import BaseModel, ValidationError
@@ -40,6 +41,9 @@ IMPORTANT:
 - If the user wants to MODIFY/WRITE/CREATE something, use create_risk
 - If the user just wants to VIEW/READ/LIST information, use get_project_status or list_risks
 - If none apply, do NOT call any tool
+- NEVER reply in prose to ask the user for a risk's title, severity, description, or project.
+  A bare "add a risk" is already enough to call create_risk: pass whatever fields the user gave
+  and omit the rest. Approval renders a form where they fill in the missing fields directly.
 - Extract project codes from context (e.g., "project 2" → "PRJ-002", "PRJ-001" stays "PRJ-001")
 - Always pad project numbers to 3 digits (2 → 002, 001 → 001)
 - Use prior conversation to resolve follow-ups: "How about PRJ-003?" repeats the previous tool with new project
@@ -76,6 +80,27 @@ def make_llm_classifier(
     return classify
 
 
+def _normalize_arguments(arguments: dict) -> dict:
+    """Clean up a model's tool-call arguments before they become tool_input.
+
+    Drops nulls (an omitted field must look omitted, not present-and-None) and
+    unwraps nested objects that came back as a JSON *string* — some models
+    serialize `risk_payload` as "{}" rather than {}, which every downstream
+    consumer would otherwise choke on.
+    """
+    normalized = {}
+    for key, value in arguments.items():
+        if isinstance(value, str) and key.endswith("_payload"):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+        if value is None:
+            continue
+        normalized[key] = value
+    return normalized
+
+
 def make_tool_calling_classifier(provider: LLMProvider) -> IntentClassifier:
     """Wraps an LLMProvider's tool-calling ability as an IntentClassifier.
 
@@ -102,8 +127,9 @@ def make_tool_calling_classifier(provider: LLMProvider) -> IntentClassifier:
             logger.warning("LLM called unknown tool: %s (returning unsupported)", call.name)
             return "unsupported", {}
 
-        logger.info("LLM classified: intent=%s project_code=%s", intent, call.arguments.get("project_code"))
-        return intent, call.arguments
+        arguments = _normalize_arguments(call.arguments)
+        logger.info("LLM classified: intent=%s project_code=%s", intent, arguments.get("project_code"))
+        return intent, arguments
 
     return classify
 

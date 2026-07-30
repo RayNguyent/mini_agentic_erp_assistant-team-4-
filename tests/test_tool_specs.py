@@ -31,7 +31,14 @@ def test_list_risks_requires_only_project_code():
     assert "risk_payload" not in fn["parameters"]["properties"]
 
 
-def test_create_risk_requires_project_code_and_risk_payload():
+def test_create_risk_offers_project_code_and_risk_payload():
     fn = _spec_by_name(get_openai_tool_specs(), "create_risk")["function"]
-    assert set(fn["parameters"]["required"]) == {"project_code", "risk_payload"}
-    assert "risk_payload" in fn["parameters"]["properties"]
+    assert {"project_code", "risk_payload"} <= set(fn["parameters"]["properties"])
+
+
+def test_create_risk_requires_nothing_so_a_bare_request_still_calls_it():
+    """An under-specified "add a risk" must still produce a tool call — that
+    is what routes the user to the approval form instead of a chat reply
+    asking for the details."""
+    fn = _spec_by_name(get_openai_tool_specs(), "create_risk")["function"]
+    assert not fn["parameters"].get("required")

@@ -13,12 +13,23 @@ class ChatRequest(BaseModel):
     history: list[ChatTurn] | None = None
 
 
+class RiskDraft(BaseModel):
+    """Pre-fill for the create_risk approval form: whatever the classifier
+    managed to extract, with blanks for whatever it didn't."""
+
+    project_code: str = ""
+    title: str = ""
+    severity: Literal["low", "medium", "high"] = "medium"
+    description: str = ""
+
+
 class ChatResponse(BaseModel):
     answer: str
     tool_used: str | None = None
     approval_required: bool = False
     approval_id: str | None = None
     error_code: str | None = None
+    risk_draft: RiskDraft | None = None
 
 
 class ApproveRequest(BaseModel):

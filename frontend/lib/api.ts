@@ -1,12 +1,24 @@
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
+export type RiskSeverity = "low" | "medium" | "high";
+
+/** Pre-fill for the create_risk approval form — whatever the backend could
+ *  extract from the message, blank for whatever it could not. */
+export type RiskDraft = {
+  project_code: string;
+  title: string;
+  severity: RiskSeverity;
+  description: string;
+};
+
 export type ChatResponse = {
   answer: string;
   tool_used: string | null;
   approval_required: boolean;
   approval_id: string | null;
   error_code: string | null;
+  risk_draft: RiskDraft | null;
 };
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };

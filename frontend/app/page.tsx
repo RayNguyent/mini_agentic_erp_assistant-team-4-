@@ -1,7 +1,14 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { ChatTurn, streamApprove, streamChat, streamReject } from "@/lib/api";
+import {
+  ChatResponse,
+  ChatTurn,
+  RiskDraft,
+  streamApprove,
+  streamChat,
+  streamReject,
+} from "@/lib/api";
 
 const HISTORY_TURNS = 8;
 
@@ -16,9 +23,22 @@ type ChatMessage = {
     approvalId: string;
     toolUsed: string | null;
     resolution: "pending" | "approved" | "rejected";
-    riskDraft?: { title: string; severity: "low" | "medium" | "high"; description: string };
+    riskDraft?: RiskDraft;
   };
 };
+
+const EMPTY_RISK_DRAFT: RiskDraft = {
+  project_code: "",
+  title: "",
+  severity: "medium",
+  description: "",
+};
+
+/** The form can only be submitted once the fields create_risk actually
+ *  requires are filled; everything else is optional. */
+function isRiskDraftComplete(draft: RiskDraft) {
+  return Boolean(draft.project_code.trim() && draft.title.trim());
+}
 
 function newId() {
   return Math.random().toString(36).slice(2);
@@ -48,10 +68,7 @@ export default function Home() {
     );
   }
 
-  function finishMessage(
-    id: string,
-    payload: { answer: string; tool_used: string | null; approval_required: boolean; approval_id: string | null; error_code: string | null }
-  ) {
+  function finishMessage(id: string, payload: ChatResponse) {
     setMessages((prev) =>
       prev.map((m) =>
         m.id === id
@@ -67,7 +84,7 @@ export default function Home() {
                     resolution: "pending",
                     riskDraft:
                       payload.tool_used === "create_risk"
-                        ? { title: "", severity: "medium", description: "" }
+                        ? { ...EMPTY_RISK_DRAFT, ...(payload.risk_draft ?? {}) }
                         : undefined,
                   }
                 : undefined,
@@ -123,7 +140,7 @@ export default function Home() {
     }
   }
 
-  function updateRiskDraft(sourceId: string, patch: Partial<{ title: string; severity: "low" | "medium" | "high"; description: string }>) {
+  function updateRiskDraft(sourceId: string, patch: Partial<RiskDraft>) {
     setMessages((prev) =>
       prev.map((m) =>
         m.id === sourceId && m.approval?.riskDraft
@@ -136,7 +153,11 @@ export default function Home() {
   async function handleApproval(sourceId: string, decision: "approved" | "rejected") {
     const source = messages.find((m) => m.id === sourceId);
     if (!source?.approval || isBusy) return;
-    if (decision === "approved" && source.approval.riskDraft && !source.approval.riskDraft.title.trim()) {
+    if (
+      decision === "approved" &&
+      source.approval.riskDraft &&
+      !isRiskDraftComplete(source.approval.riskDraft)
+    ) {
       return;
     }
 
@@ -166,7 +187,16 @@ export default function Home() {
             onToken: (text) => appendToken(resultId, text),
             onDone: (payload) => finishMessage(resultId, payload),
           },
-          riskDraft ? { risk_payload: riskDraft } : undefined
+          riskDraft
+            ? {
+                project_code: riskDraft.project_code.trim(),
+                risk_payload: {
+                  title: riskDraft.title.trim(),
+                  severity: riskDraft.severity,
+                  description: riskDraft.description.trim(),
+                },
+              }
+            : undefined
         );
       } else {
         await streamReject(approvalId, {
@@ -240,6 +270,12 @@ export default function Home() {
                       {m.approval.resolution === "pending" && m.approval.riskDraft && (
                         <div className="flex flex-col gap-2 rounded-xl bg-black/[.03] p-3 dark:bg-white/[.06]">
                           <input
+                            value={m.approval.riskDraft.project_code}
+                            onChange={(e) => updateRiskDraft(m.id, { project_code: e.target.value })}
+                            placeholder="Project code (e.g. PRJ-001)"
+                            className="rounded-lg border border-black/[.1] bg-white px-3 py-1.5 text-xs text-zinc-900 outline-none dark:border-white/[.15] dark:bg-zinc-900 dark:text-zinc-50"
+                          />
+                          <input
                             value={m.approval.riskDraft.title}
                             onChange={(e) => updateRiskDraft(m.id, { title: e.target.value })}
                             placeholder="Risk title"
@@ -270,7 +306,10 @@ export default function Home() {
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => handleApproval(m.id, "approved")}
-                            disabled={isBusy || Boolean(m.approval.riskDraft && !m.approval.riskDraft.title.trim())}
+                            disabled={
+                              isBusy ||
+                              Boolean(m.approval.riskDraft && !isRiskDraftComplete(m.approval.riskDraft))
+                            }
                             className="rounded-full bg-emerald-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
                           >
                             Approve

@@ -11,7 +11,7 @@ from typing import TypedDict
 
 from pydantic import BaseModel
 
-from app.tools.schemas import CreateRiskInput, ListRisksInput, ProjectStatusInput
+from app.tools.schemas import CreateRiskDraftInput, ListRisksInput, ProjectStatusInput
 
 
 class ToolSpec(TypedDict):
@@ -22,7 +22,7 @@ class ToolSpec(TypedDict):
 _TOOL_INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "get_project_status": ProjectStatusInput,
     "list_risks": ListRisksInput,
-    "create_risk": CreateRiskInput,
+    "create_risk": CreateRiskDraftInput,
 }
 
 _TOOL_DESCRIPTIONS: dict[str, str] = {
@@ -36,7 +36,10 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "create_risk": (
         "Add a new risk to a project with title, severity (low/medium/high), and optional description. "
-        "Requires approval. Use when user wants to add, create, log, record, or submit a new risk."
+        "Requires approval. Use when user wants to add, create, log, record, or submit a new risk. "
+        "Call this even when the user has not said which project, title, or severity they want — "
+        "pass only the fields they did supply and leave the rest out. The approval step shows the "
+        "user a form to fill in the missing fields, so never withhold the call to ask for them."
     ),
 }
 
