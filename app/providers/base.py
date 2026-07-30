@@ -1,5 +1,14 @@
 from typing import Protocol
 
+from pydantic import BaseModel
+
+from app.tools.specs import ToolSpec
+
+
+class ToolCall(BaseModel):
+    name: str
+    arguments: dict
+
 
 class LLMProvider(Protocol):
     """Provider-neutral text-generation port every LLM adapter must satisfy.
@@ -11,4 +20,24 @@ class LLMProvider(Protocol):
     failure rather than leaking SDK-specific exceptions.
     """
 
-    def generate(self, prompt: str, *, system: str | None = None) -> str: ...
+    def generate(
+        self, prompt: str, *, system: str | None = None, history: list[dict] | None = None
+    ) -> str: ...
+
+    def generate_text(
+        self, prompt: str, *, system: str | None = None, history: list[dict] | None = None
+    ) -> str:
+        """Generate plain text response without JSON constraints."""
+        ...
+
+    def generate_tool_call(
+        self,
+        prompt: str,
+        *,
+        tools: list[ToolSpec],
+        system: str | None = None,
+        history: list[dict] | None = None,
+    ) -> ToolCall | None:
+        """Ask the model to pick one of `tools` and return its name + parsed
+        arguments, or None if the model declines to call any tool."""
+        ...

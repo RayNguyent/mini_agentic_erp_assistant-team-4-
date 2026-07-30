@@ -26,11 +26,17 @@ _TOOL_INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
 }
 
 _TOOL_DESCRIPTIONS: dict[str, str] = {
-    "get_project_status": "Look up the current status of a single ERP project by its project code.",
-    "list_risks": "List every risk recorded against a single ERP project.",
+    "get_project_status": (
+        "Check project details: name, stage, owner, and overall status summary. "
+        "Use when user asks about project status, progress, or overview."
+    ),
+    "list_risks": (
+        "View all existing risks for a project. "
+        "Use when user asks to see, list, view, or check what risks exist for a project."
+    ),
     "create_risk": (
-        "Log a new risk against an ERP project. This is a write action that "
-        "requires human approval before it takes effect."
+        "Add a new risk to a project with title, severity (low/medium/high), and optional description. "
+        "Requires approval. Use when user wants to add, create, log, record, or submit a new risk."
     ),
 }
 

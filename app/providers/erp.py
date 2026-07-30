@@ -11,6 +11,8 @@ class ERPProvider(Protocol):
 
     def get_project(self, project_code: str) -> dict | None: ...
 
+    def list_projects(self) -> list[dict]: ...
+
     def list_risks(self, project_code: str) -> list[dict]: ...
 
     def create_risk(self, project_code: str, risk_payload: dict) -> dict: ...
@@ -32,6 +34,9 @@ class MockERPProvider:
 
     def get_project(self, project_code: str) -> dict | None:
         return self._projects.get(project_code)
+
+    def list_projects(self) -> list[dict]:
+        return list(self._projects.values())
 
     def list_risks(self, project_code: str) -> list[dict]:
         return [risk for risk in self._risks if risk["project_code"] == project_code]

@@ -24,7 +24,11 @@ def make_get_project_status(provider: ERPProvider):
 
         project = provider.get_project(parsed.project_code)
         if project is None:
-            raise NotFoundError(f"Project '{parsed.project_code}' was not found.")
+            projects = provider.list_projects()
+            available = ", ".join([p["project_code"] for p in projects])
+            raise NotFoundError(
+                f"Project {parsed.project_code} not found. Available projects: {available}"
+            )
 
         return ProjectStatusOutput(**project).model_dump()
 
@@ -39,7 +43,11 @@ def make_list_risks(provider: ERPProvider):
             raise _as_validation_error(exc) from exc
 
         if provider.get_project(parsed.project_code) is None:
-            raise NotFoundError(f"Project '{parsed.project_code}' was not found.")
+            projects = provider.list_projects()
+            available = ", ".join([p["project_code"] for p in projects])
+            raise NotFoundError(
+                f"Project {parsed.project_code} not found. Available projects: {available}"
+            )
 
         risks = provider.list_risks(parsed.project_code)
         return {
@@ -58,7 +66,11 @@ def make_create_risk(provider: ERPProvider):
             raise _as_validation_error(exc) from exc
 
         if provider.get_project(parsed.project_code) is None:
-            raise NotFoundError(f"Project '{parsed.project_code}' was not found.")
+            projects = provider.list_projects()
+            available = ", ".join([p["project_code"] for p in projects])
+            raise NotFoundError(
+                f"Project {parsed.project_code} not found. Available projects: {available}"
+            )
 
         risk = provider.create_risk(parsed.project_code, parsed.risk_payload.model_dump())
         return RiskOutput(**risk).model_dump()
