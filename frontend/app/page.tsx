@@ -11,6 +11,7 @@ type ChatMessage = {
   text: string;
   streaming?: boolean;
   isError?: boolean;
+  statuses?: string[];
   approval?: {
     approvalId: string;
     toolUsed: string | null;
@@ -36,6 +37,14 @@ export default function Home() {
   function appendToken(id: string, text: string) {
     setMessages((prev) =>
       prev.map((m) => (m.id === id ? { ...m, text: m.text + text } : m))
+    );
+  }
+
+  function addStatus(id: string, status: string) {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === id ? { ...m, statuses: [...(m.statuses || []), status] } : m
+      )
     );
   }
 
@@ -93,10 +102,15 @@ export default function Home() {
 
     try {
       await streamChat(message, history, {
+        onStatus: (status) => addStatus(assistantId, status),
         onToken: (text) => appendToken(assistantId, text),
-        onDone: (payload) => finishMessage(assistantId, payload),
+        onDone: (payload) => {
+          console.log("Done received:", payload);
+          finishMessage(assistantId, payload);
+        },
       });
-    } catch {
+    } catch (error) {
+      console.error("Stream error:", error);
       setMessages((prev) =>
         prev.map((m) =>
           m.id === assistantId
@@ -148,6 +162,7 @@ export default function Home() {
         await streamApprove(
           approvalId,
           {
+            onStatus: (status) => addStatus(resultId, status),
             onToken: (text) => appendToken(resultId, text),
             onDone: (payload) => finishMessage(resultId, payload),
           },
@@ -155,6 +170,7 @@ export default function Home() {
         );
       } else {
         await streamReject(approvalId, {
+          onStatus: (status) => addStatus(resultId, status),
           onToken: (text) => appendToken(resultId, text),
           onDone: (payload) => finishMessage(resultId, payload),
         });
@@ -195,7 +211,7 @@ export default function Home() {
                 className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
               >
                 <div
-                  className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed ${
+                  className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                     m.role === "user"
                       ? "bg-zinc-900 text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900"
                       : m.isError
@@ -203,10 +219,21 @@ export default function Home() {
                         : "bg-white text-zinc-900 border border-black/[.08] dark:bg-zinc-900 dark:text-zinc-50 dark:border-white/[.145]"
                   }`}
                 >
-                  {m.text}
-                  {m.streaming && (
-                    <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-current align-middle" />
+                  {m.statuses && m.statuses.length > 0 && (
+                    <div className="mb-3 flex flex-col gap-1 pb-3 border-b border-current/[.2]">
+                      {m.statuses.map((status, idx) => (
+                        <div key={idx} className="text-xs opacity-75">
+                          {status}
+                        </div>
+                      ))}
+                    </div>
                   )}
+                  <div className="whitespace-pre-wrap">
+                    {m.text}
+                    {m.streaming && (
+                      <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-current align-middle" />
+                    )}
+                  </div>
 
                   {m.approval && (
                     <div className="mt-3 flex flex-col gap-2">

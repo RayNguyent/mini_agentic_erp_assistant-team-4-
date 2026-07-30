@@ -1,8 +1,11 @@
 import re
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from app.errors import ErrorCode, NonRetryableToolError, RetryableToolError
 from app.state import MAX_RETRIES, AgentState, NextAction
+
+if TYPE_CHECKING:
+    from app.providers.base import LLMProvider
 
 # intent -> tool name. Extend as new tools land in app/tools.
 READ_TOOLS = {
@@ -37,6 +40,12 @@ class ToolRegistry(Protocol):
     """Contract app/tools must satisfy: look up a tool function by name."""
 
     def get(self, tool_name: str) -> ToolFn | None: ...
+
+
+class StatusCallback(Protocol):
+    """Called with status updates during agent execution."""
+
+    def __call__(self, status: str) -> None: ...
 
 
 class IntentClassifier(Protocol):
@@ -120,6 +129,7 @@ def route_decision(state: AgentState) -> AgentState:
             state,
             selected_tool=READ_TOOLS[state.intent],
             next_action=NextAction.EXECUTE_READ_TOOL,
+            status="Executing tool...",
         )
     if state.intent in WRITE_TOOLS:
         return _evolve(
@@ -127,12 +137,12 @@ def route_decision(state: AgentState) -> AgentState:
             selected_tool=WRITE_TOOLS[state.intent],
             approval_required=True,
             next_action=NextAction.EXECUTE_WRITE_TOOL,
+            status="Requesting approval...",
         )
     return _evolve(
         state,
-        next_action=NextAction.FORMAT_RESPONSE,
-        error_code=ErrorCode.UNSUPPORTED_INTENT,
-        error_message=f"'{state.intent}' is not a supported request.",
+        next_action=NextAction.GENERATE_RESPONSE,
+        status="Generating helpful response...",
     )
 
 
@@ -243,9 +253,52 @@ def _render_tool_output(tool_name: str | None, output: dict) -> str:
     return renderer(output)
 
 
+def generate_response(state: AgentState, message: str, provider: "LLMProvider | None" = None) -> AgentState:
+    """Generate a conversational response when no tool applies."""
+    response = generate_conversational_response(message, provider)
+    return _evolve(
+        state,
+        answer=response,
+        next_action=NextAction.DONE,
+        status="Done!",
+    )
+
+
+def generate_conversational_response(message: str, provider: "LLMProvider | None" = None) -> str:
+    """Generate a helpful conversational response when no tool applies.
+
+    Falls back to a generic message if no provider is available."""
+    if provider is None:
+        return (
+            "I'm an ERP assistant focused on project management. I can help you:\n"
+            "• Check project status (e.g., 'What's the status of PRJ-001?')\n"
+            "• List risks for a project (e.g., 'Show risks for PRJ-001')\n"
+            "• Create new risks (e.g., 'Create a risk for PRJ-001')\n\n"
+            "What can I help you with?"
+        )
+
+    system_prompt = """You are a helpful ERP project management assistant. The user has asked
+something that doesn't directly match your available tools (project status, list risks, create risks).
+Respond conversationally and helpfully, acknowledging their request and suggesting how you can help
+with your available capabilities. Keep your response brief and friendly."""
+
+    try:
+        response = provider.generate_text(message, system=system_prompt)
+        return response
+    except Exception:
+        return (
+            "I couldn't understand that request. I specialize in:\n"
+            "• Checking project status • Listing project risks • Creating new risks\n"
+            "Try asking about a specific project (e.g., 'What's the status of PRJ-001?')"
+        )
+
+
 def format_response(state: AgentState) -> AgentState:
     if state.next_action == NextAction.AWAIT_APPROVAL:
         return state
+
+    if state.answer:
+        return _evolve(state, next_action=NextAction.DONE)
 
     if state.error_code is not None:
         answer = state.error_message or "The request could not be completed."
@@ -262,16 +315,31 @@ def run(
     tool_registry: ToolRegistry,
     classify: IntentClassifier = default_classify,
     history: list[dict] | None = None,
+    provider: "LLMProvider | None" = None,
+    on_status: "StatusCallback | None" = None,
 ) -> AgentState:
     """Drive a request from raw message through to a final or
     approval-pending AgentState."""
+
+    def emit(status: str) -> None:
+        if on_status:
+            on_status(status)
+
+    emit("🔍 Analyzing your request...")
     state = parse_intent(message, classify, history)
+    emit(f"✓ Intent: {state.intent.upper()}")
+
     state = route_decision(state)
 
     if state.next_action == NextAction.EXECUTE_READ_TOOL:
+        emit(f"🔧 Executing: {state.selected_tool}")
         state = execute_read_tool(state, tool_registry)
     elif state.next_action == NextAction.EXECUTE_WRITE_TOOL:
+        emit(f"⚠️ Write action requires approval: {state.selected_tool}")
         state = execute_write_tool(state, tool_registry)
+    elif state.next_action == NextAction.GENERATE_RESPONSE:
+        emit("💬 Generating response...")
+        state = generate_response(state, message, provider)
 
     if state.next_action == NextAction.AWAIT_APPROVAL:
         return state

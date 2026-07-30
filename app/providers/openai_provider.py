@@ -82,6 +82,50 @@ class OpenAIProvider:
             raise ProviderError("OpenAI returned an empty response")
         return content
 
+    def generate_text(
+        self, prompt: str, *, system: str | None = None, history: list[dict] | None = None
+    ) -> str:
+        """Generate plain text response without JSON mode constraint."""
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": prompt})
+
+        start = time.monotonic()
+        logger.info(
+            "openai request: mode=generate_text model=%s base_url=%s prompt_chars=%d",
+            self._model, self._client.base_url, len(prompt),
+        )
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+            )
+        except (APITimeoutError, RateLimitError, APIConnectionError) as exc:
+            logger.warning(
+                "openai request failed: mode=generate_text model=%s elapsed_ms=%d error=%s",
+                self._model, (time.monotonic() - start) * 1000, exc,
+            )
+            raise ProviderError(f"OpenAI request failed: {exc}") from exc
+        except (AuthenticationError, BadRequestError) as exc:
+            logger.warning(
+                "openai request rejected: mode=generate_text model=%s elapsed_ms=%d error=%s",
+                self._model, (time.monotonic() - start) * 1000, exc,
+            )
+            raise NonRetryableProviderError(f"OpenAI request rejected: {exc}") from exc
+
+        elapsed_ms = (time.monotonic() - start) * 1000
+        content = response.choices[0].message.content
+        logger.info(
+            "openai response: mode=generate_text model=%s elapsed_ms=%d response_chars=%d",
+            self._model, elapsed_ms, len(content or ""),
+        )
+        if not content:
+            raise ProviderError("OpenAI returned an empty response")
+        return content
+
     def generate_tool_call(
         self,
         prompt: str,
@@ -102,6 +146,7 @@ class OpenAIProvider:
             "openai request: mode=tool_call model=%s base_url=%s prompt_chars=%d tools=%d",
             self._model, self._client.base_url, len(prompt), len(tools),
         )
+        logger.debug("openai tool-call system_prompt=%s user_prompt=%s", system, prompt)
         try:
             response = self._client.chat.completions.create(
                 model=self._model,

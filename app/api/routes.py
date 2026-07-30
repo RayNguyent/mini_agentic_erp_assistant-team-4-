@@ -1,9 +1,15 @@
 import json
+import time
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from app.api.dependencies import get_approval_store, get_intent_classifier, get_tool_registry
+from app.api.dependencies import (
+    get_approval_store,
+    get_intent_classifier,
+    get_llm_provider,
+    get_tool_registry,
+)
 from app.api.schemas import (
     ApproveRequest,
     ChatRequest,
@@ -12,6 +18,7 @@ from app.api.schemas import (
     RejectRequest,
 )
 from app.approvals.store import ApprovalStore
+from app.providers.base import LLMProvider
 from app.runtime import IntentClassifier, ToolRegistry, resume, run
 from app.state import AgentState, NextAction
 
@@ -22,15 +29,20 @@ def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-def _stream_response(payload: ChatResponse) -> StreamingResponse:
-    """Fake token-by-token streaming over an already-computed ChatResponse.
+def _stream_response(
+    payload: ChatResponse, statuses: list[str] | None = None
+) -> StreamingResponse:
+    """Stream agent decision-making + token-by-token response.
 
-    The runtime resolves an answer synchronously (no LLM generates the final
-    text token-by-token), so this chunks the finished string client-side of
-    the model call, purely to drive a ChatGPT-style typing UI.
+    Emits status events showing what the agent decided, then streams answer word-by-word.
     """
 
     def event_stream():
+        if statuses:
+            for status in statuses:
+                yield _sse_event("status", {"message": status})
+                time.sleep(0.05)
+
         words = payload.answer.split(" ")
         for i, word in enumerate(words):
             chunk = word if i == len(words) - 1 else word + " "
@@ -63,8 +75,15 @@ def chat(
     registry: ToolRegistry = Depends(get_tool_registry),
     classify: IntentClassifier = Depends(get_intent_classifier),
     store: ApprovalStore = Depends(get_approval_store),
+    provider: LLMProvider | None = Depends(get_llm_provider),
 ) -> ChatResponse:
-    state = run(request.message, registry, classify, history=_as_history(request))
+    state = run(
+        request.message,
+        registry,
+        classify,
+        history=_as_history(request),
+        provider=provider,
+    )
 
     if state.next_action == NextAction.AWAIT_APPROVAL:
         approval_id = store.create(state)
@@ -84,8 +103,21 @@ def chat_stream(
     registry: ToolRegistry = Depends(get_tool_registry),
     classify: IntentClassifier = Depends(get_intent_classifier),
     store: ApprovalStore = Depends(get_approval_store),
+    provider: LLMProvider | None = Depends(get_llm_provider),
 ) -> StreamingResponse:
-    state = run(request.message, registry, classify, history=_as_history(request))
+    statuses: list[str] = []
+
+    def on_status(status: str) -> None:
+        statuses.append(status)
+
+    state = run(
+        request.message,
+        registry,
+        classify,
+        history=_as_history(request),
+        provider=provider,
+        on_status=on_status,
+    )
 
     if state.next_action == NextAction.AWAIT_APPROVAL:
         approval_id = store.create(state)
@@ -98,7 +130,7 @@ def chat_stream(
     else:
         payload = _finished_response(state)
 
-    return _stream_response(payload)
+    return _stream_response(payload, statuses=statuses)
 
 
 @router.post("/approve", response_model=ChatResponse)
@@ -122,7 +154,8 @@ def approve_stream(
     pending = store.pop(request.approval_id)
     merged_input = {**(pending.tool_input or {}), **(request.tool_input or {})}
     state = pending.model_copy(update={"approved": True, "tool_input": merged_input})
-    return _stream_response(_finished_response(resume(state, registry)))
+    statuses = ["✅ Approval confirmed!", f"🔧 Executing: {state.selected_tool}"]
+    return _stream_response(_finished_response(resume(state, registry)), statuses=statuses)
 
 
 @router.post("/reject", response_model=ChatResponse)

@@ -8,9 +8,11 @@ MAX_RETRIES = 2
 
 
 class NextAction(str, Enum):
+    PARSE_INTENT = "parse_intent"
     ROUTE_DECISION = "route_decision"
     EXECUTE_READ_TOOL = "execute_read_tool"
     EXECUTE_WRITE_TOOL = "execute_write_tool"
+    GENERATE_RESPONSE = "generate_response"
     AWAIT_APPROVAL = "await_approval"
     FORMAT_RESPONSE = "format_response"
     DONE = "done"
@@ -38,6 +40,7 @@ class AgentState(BaseModel):
     error_code: ErrorCode | None = None
     error_message: str | None = None
     answer: str | None = None
+    status: str = "Analyzing your request..."
 
     @field_validator("intent")
     @classmethod

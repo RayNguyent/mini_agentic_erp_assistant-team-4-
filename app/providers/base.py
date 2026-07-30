@@ -24,6 +24,12 @@ class LLMProvider(Protocol):
         self, prompt: str, *, system: str | None = None, history: list[dict] | None = None
     ) -> str: ...
 
+    def generate_text(
+        self, prompt: str, *, system: str | None = None, history: list[dict] | None = None
+    ) -> str:
+        """Generate plain text response without JSON constraints."""
+        ...
+
     def generate_tool_call(
         self,
         prompt: str,

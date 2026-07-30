@@ -12,6 +12,7 @@ export type ChatResponse = {
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 
 type StreamHandlers = {
+  onStatus?: (status: string) => void;
   onToken: (text: string) => void;
   onDone: (payload: ChatResponse) => void;
 };
@@ -19,7 +20,7 @@ type StreamHandlers = {
 async function streamSSE(
   path: string,
   body: unknown,
-  { onToken, onDone }: StreamHandlers
+  { onStatus, onToken, onDone }: StreamHandlers
 ): Promise<void> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
@@ -54,9 +55,15 @@ async function streamSSE(
       }
       if (!data) continue;
 
-      const parsed = JSON.parse(data);
-      if (event === "token") onToken(parsed.text as string);
-      else if (event === "done") onDone(parsed as ChatResponse);
+      try {
+        const parsed = JSON.parse(data);
+        if (event === "status" && onStatus) onStatus(parsed.message as string);
+        else if (event === "token") onToken(parsed.text as string);
+        else if (event === "done") onDone(parsed as ChatResponse);
+      } catch (e) {
+        console.error(`Failed to parse ${event} event:`, data, e);
+        throw e;
+      }
     }
   }
 }
