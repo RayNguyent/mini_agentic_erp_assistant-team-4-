@@ -43,3 +43,10 @@ class NotFoundError(NonRetryableToolError):
 
 class ToolValidationError(NonRetryableToolError):
     code = ErrorCode.VALIDATION_ERROR
+
+
+class NonRetryableProviderError(NonRetryableToolError):
+    """A provider call failed in a way that will not change on retry
+    (e.g. bad credentials, malformed request)."""
+
+    code = ErrorCode.PROVIDER_ERROR
