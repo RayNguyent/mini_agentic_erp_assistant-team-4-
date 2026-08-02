@@ -1,0 +1,15 @@
+# Keeps the build context small and correct — Docker sends everything not
+# listed here to the daemon before the Dockerfile's COPY commands even run,
+# regardless of what those commands selectively copy.
+.venv/
+.git/
+.pytest_cache/
+__pycache__/
+*.pyc
+frontend/
+data/index/
+data/chroma/
+data/audit.jsonl
+data/traces.jsonl
+data/ingestion_log.jsonl
+eval/reports/

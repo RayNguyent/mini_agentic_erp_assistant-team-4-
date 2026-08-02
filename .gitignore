@@ -19,6 +19,23 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# Generated RAG index + vector store (rebuild with `python -m app.rag.ingest`)
+data/index/
+data/chroma/
+
+# Runtime evidence written by the app (traces, audit, ingestion history).
+# Curated snapshots for submission live in evidence/ and are committed.
+data/traces.jsonl
+data/audit.jsonl
+data/ingestion_log.jsonl
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/evidence/playwright-report/
+frontend/evidence/playwright-results.json
+frontend/test-results/
+
 # Editors / OS
 .vscode/
 .idea/

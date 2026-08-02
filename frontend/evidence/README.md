@@ -1,0 +1,1 @@
+Playwright HTML report and JSON results are written here by `npm run test:e2e` (see frontend/playwright.config.ts). Generated content is gitignored; commit a curated screenshot subset for submission evidence.

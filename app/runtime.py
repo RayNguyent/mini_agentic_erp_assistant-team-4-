@@ -1,8 +1,19 @@
+"""The single-agent graph: intent -> route -> tool/conversation -> answer.
+
+Node functions stay independently callable (`route_decision(state)`) so they
+can be unit-tested without standing up a graph; `build_graph()` wires the same
+functions into the engine that `run()`/`resume()` drive. The multi-agent
+supervisor in app/agents composes these same nodes into a wider graph.
+"""
+
 import re
+import time
 from typing import TYPE_CHECKING, Protocol
 
 from app.errors import ErrorCode, NonRetryableToolError, RetryableToolError
-from app.state import MAX_RETRIES, AgentState, NextAction
+from app.graph.engine import Graph, GraphContext, evolve
+from app.graph.retry import RetryPolicy, retry_call
+from app.state import MAX_RETRIES, AgentState, NextAction, Route
 
 if TYPE_CHECKING:
     from app.providers.base import LLMProvider
@@ -11,10 +22,15 @@ if TYPE_CHECKING:
 READ_TOOLS = {
     "project_status": "get_project_status",
     "list_risks": "list_risks",
+    "list_project_tasks": "list_project_tasks",
+    "sprint_progress": "get_sprint_progress",
+    "budget_summary": "get_budget_summary",
 }
 WRITE_TOOLS = {
     "create_risk": "create_risk",
 }
+
+DEFAULT_RETRY_POLICY = RetryPolicy(max_retries=MAX_RETRIES)
 
 _PROJECT_CODE_RE = re.compile(r"[A-Za-z]{2,}[\s_-]?\d+")
 _PROJECT_CODE_PARTS_RE = re.compile(r"([A-Za-z]{2,})[\s_-]?(\d+)")
@@ -67,13 +83,16 @@ class IntentClassifier(Protocol):
     def __call__(self, message: str, history: list[dict] | None = None) -> tuple[str, dict]: ...
 
 
+# Backwards-compatible alias: the engine's `evolve` used to live here.
+_evolve = evolve
+
+
 def default_classify(message: str, history: list[dict] | None = None) -> tuple[str, dict]:
     """Deterministic, offline keyword classifier.
 
-    Placeholder for parse_intent until an LLMProvider-backed classifier is
-    wired in; keeps the runtime demoable without an external dependency.
-    `history` is accepted (to match IntentClassifier) but unused — this
-    classifier has no way to reason over prior turns.
+    The fallback whenever no LLM provider is configured or a provider-backed
+    classifier misbehaves. `history` is accepted (to match IntentClassifier)
+    but unused — this classifier has no way to reason over prior turns.
     """
     lowered = message.lower()
     match = _PROJECT_CODE_RE.search(message.upper())
@@ -83,6 +102,12 @@ def default_classify(message: str, history: list[dict] | None = None) -> tuple[s
         intent = "create_risk"
     elif "risk" in lowered:
         intent = "list_risks"
+    elif "budget" in lowered or "cost" in lowered or "spend" in lowered or "variance" in lowered:
+        intent = "budget_summary"
+    elif "sprint" in lowered or "velocity" in lowered or "iteration" in lowered:
+        intent = "sprint_progress"
+    elif "task" in lowered:
+        intent = "list_project_tasks"
     elif "status" in lowered:
         intent = "project_status"
     else:
@@ -109,12 +134,7 @@ def _infer_intent_from_history(history: list[dict] | None) -> str | None:
     return None
 
 
-def _evolve(state: AgentState, **updates) -> AgentState:
-    """Build the next state through the constructor (not model_copy) so
-    AgentState's validators actually run on every transition."""
-    data = state.model_dump()
-    data.update(updates)
-    return AgentState(**data)
+# --- Nodes ------------------------------------------------------------------
 
 
 def parse_intent(
@@ -140,31 +160,42 @@ def parse_intent(
 
 def route_decision(state: AgentState) -> AgentState:
     if state.intent in READ_TOOLS:
-        return _evolve(
+        return evolve(
             state,
             selected_tool=READ_TOOLS[state.intent],
+            route=Route.TOOL,
             next_action=NextAction.EXECUTE_READ_TOOL,
             status="Executing tool...",
         )
     if state.intent in WRITE_TOOLS:
-        return _evolve(
+        return evolve(
             state,
             selected_tool=WRITE_TOOLS[state.intent],
             approval_required=True,
+            route=Route.TOOL,
+            risk_level="high",
             next_action=NextAction.EXECUTE_WRITE_TOOL,
             status="Requesting approval...",
         )
-    return _evolve(
+    return evolve(
         state,
+        route=Route.CONVERSATION,
         next_action=NextAction.GENERATE_RESPONSE,
         status="Generating helpful response...",
     )
 
 
-def _run_tool_with_retry(state: AgentState, tool_registry: ToolRegistry) -> AgentState:
+def _run_tool_with_retry(
+    state: AgentState,
+    tool_registry: ToolRegistry,
+    *,
+    policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+    sleep=time.sleep,
+    ctx: GraphContext | None = None,
+) -> AgentState:
     tool_fn = tool_registry.get(state.selected_tool)
     if tool_fn is None:
-        return _evolve(
+        return evolve(
             state,
             next_action=NextAction.FORMAT_RESPONSE,
             error_code=ErrorCode.NOT_FOUND,
@@ -175,53 +206,58 @@ def _run_tool_with_retry(state: AgentState, tool_registry: ToolRegistry) -> Agen
     if isinstance(tool_input.get("project_code"), str):
         tool_input = {**tool_input, "project_code": _normalize_project_code(tool_input["project_code"])}
 
-    retry_count = state.retry_count
-    while True:
-        try:
-            output = tool_fn(tool_input)
-            return _evolve(
-                state,
-                tool_output=output,
-                next_action=NextAction.FORMAT_RESPONSE,
-                error_code=None,
-                error_message=None,
-                retry_count=retry_count,
-            )
-        except NonRetryableToolError as exc:
-            return _evolve(
-                state,
-                next_action=NextAction.FORMAT_RESPONSE,
-                error_code=exc.code,
-                error_message=exc.message,
-                retry_count=retry_count,
-            )
-        except RetryableToolError as exc:
-            if retry_count >= MAX_RETRIES:
-                return _evolve(
-                    state,
-                    next_action=NextAction.FORMAT_RESPONSE,
-                    error_code=exc.code,
-                    error_message=exc.message,
-                    retry_count=retry_count,
-                )
-            retry_count += 1
+    retries = 0
+
+    def _on_retry(attempt: int, exc: Exception) -> None:
+        nonlocal retries
+        retries = attempt
+        if ctx is not None:
+            ctx.emit(f"⟳ Retry {attempt}/{policy.max_retries} after {type(exc).__name__}")
+
+    try:
+        output, _ = retry_call(
+            lambda: tool_fn(tool_input),
+            policy=policy,
+            # Only transient failures are retried; a NotFoundError or a
+            # validation failure is deterministic and would fail identically.
+            is_retryable=lambda exc: isinstance(exc, RetryableToolError),
+            on_retry=_on_retry,
+            sleep=sleep,
+        )
+    except (RetryableToolError, NonRetryableToolError) as exc:
+        return evolve(
+            state,
+            next_action=NextAction.FORMAT_RESPONSE,
+            error_code=exc.code,
+            error_message=exc.message,
+            retry_count=retries,
+        )
+
+    return evolve(
+        state,
+        tool_output=output,
+        next_action=NextAction.FORMAT_RESPONSE,
+        error_code=None,
+        error_message=None,
+        retry_count=retries,
+    )
 
 
-def execute_read_tool(state: AgentState, tool_registry: ToolRegistry) -> AgentState:
-    return _run_tool_with_retry(state, tool_registry)
+def execute_read_tool(state: AgentState, tool_registry: ToolRegistry, **kwargs) -> AgentState:
+    return _run_tool_with_retry(state, tool_registry, **kwargs)
 
 
-def execute_write_tool(state: AgentState, tool_registry: ToolRegistry) -> AgentState:
+def execute_write_tool(state: AgentState, tool_registry: ToolRegistry, **kwargs) -> AgentState:
     if state.approved is None:
-        return _evolve(state, next_action=NextAction.AWAIT_APPROVAL)
+        return evolve(state, next_action=NextAction.AWAIT_APPROVAL)
     if state.approved is False:
-        return _evolve(
+        return evolve(
             state,
             next_action=NextAction.FORMAT_RESPONSE,
             error_code=ErrorCode.APPROVAL_REJECTED,
             error_message="The requested action was rejected during approval.",
         )
-    return _run_tool_with_retry(state, tool_registry)
+    return _run_tool_with_retry(state, tool_registry, **kwargs)
 
 
 def _render_project_status(output: dict) -> str:
@@ -254,10 +290,60 @@ def _render_create_risk(output: dict) -> str:
     )
 
 
+def _render_task(task: dict) -> str:
+    overdue = " ⚠ overdue" if task.get("overdue") else ""
+    return (
+        f"• [{task.get('task_id', '?')}] {task.get('title', '?')} "
+        f"({task.get('state', '?')}) — due {task.get('deadline') or 'unscheduled'}{overdue}"
+    )
+
+
+def _render_list_project_tasks(output: dict) -> str:
+    tasks = output.get("tasks", [])
+    if not tasks:
+        return f"No matching tasks for {output.get('project_code', '?')}."
+    header = f"Tasks for {output.get('project_code', '?')} ({len(tasks)} shown):"
+    return "\n".join([header, *(_render_task(task) for task in tasks)])
+
+
+def _render_sprint_progress(output: dict) -> str:
+    return (
+        f"Sprint {output.get('iteration_label', '?')} for {output.get('project_code', '?')} "
+        f"({output.get('start_date', '?')} → {output.get('end_date', '?')})\n"
+        f"• Mapping profile: {output.get('mapping_profile', '?')}\n"
+        f"• Committed: {output.get('committed', 0)} | "
+        f"Completed: {output.get('completed', 0)} | "
+        f"Open: {output.get('open', 0)} | "
+        f"Overdue: {output.get('overdue', 0)}\n"
+        f"• Completion: {output.get('completion_pct', 0)}%"
+    )
+
+
+def _render_budget_summary(output: dict) -> str:
+    currency = output.get("currency", "")
+    flags = output.get("completeness_flags", [])
+    lines = [
+        f"Budget for {output.get('project_code', '?')} ({currency}, as of {output.get('as_of', '?')})",
+        f"• Planned: {output.get('planned_budget')}",
+        f"• Actual cost: {output.get('actual_cost')}",
+        f"• Committed: {output.get('committed_cost')}",
+        f"• Forecast revenue: {output.get('forecast_revenue')}",
+        f"• Remaining: {output.get('remaining')} | Variance: {output.get('variance')}",
+    ]
+    if flags:
+        # Surfaced rather than silently zero-filled: an incomplete budget that
+        # looks complete is the failure mode this tool exists to avoid.
+        lines.append(f"• Incomplete data: {', '.join(flags)}")
+    return "\n".join(lines)
+
+
 _TOOL_RENDERERS = {
     "get_project_status": _render_project_status,
     "list_risks": _render_list_risks,
     "create_risk": _render_create_risk,
+    "list_project_tasks": _render_list_project_tasks,
+    "get_sprint_progress": _render_sprint_progress,
+    "get_budget_summary": _render_budget_summary,
 }
 
 
@@ -268,10 +354,12 @@ def _render_tool_output(tool_name: str | None, output: dict) -> str:
     return renderer(output)
 
 
-def generate_response(state: AgentState, message: str, provider: "LLMProvider | None" = None) -> AgentState:
+def generate_response(
+    state: AgentState, message: str, provider: "LLMProvider | None" = None
+) -> AgentState:
     """Generate a conversational response when no tool applies."""
     response = generate_conversational_response(message, provider)
-    return _evolve(
+    return evolve(
         state,
         answer=response,
         next_action=NextAction.DONE,
@@ -313,7 +401,7 @@ def format_response(state: AgentState) -> AgentState:
         return state
 
     if state.answer:
-        return _evolve(state, next_action=NextAction.DONE)
+        return evolve(state, next_action=NextAction.DONE)
 
     if state.error_code is not None:
         answer = state.error_message or "The request could not be completed."
@@ -322,7 +410,84 @@ def format_response(state: AgentState) -> AgentState:
     else:
         answer = "No result available."
 
-    return _evolve(state, answer=answer, next_action=NextAction.DONE)
+    return evolve(state, answer=answer, next_action=NextAction.DONE)
+
+
+# --- Graph wiring -----------------------------------------------------------
+
+
+def _parse_intent_node(state: AgentState, ctx: GraphContext) -> AgentState:
+    ctx.emit("🔍 Analyzing your request...")
+    parsed = parse_intent(
+        ctx.require("message"),
+        ctx.get("classify", default_classify),
+        ctx.get("history"),
+    )
+    ctx.emit(f"✓ Intent: {parsed.intent.upper()}")
+    # Carry request-scoped identity fields the classifier does not know about.
+    return evolve(
+        parsed,
+        request_id=state.request_id,
+        actor=state.actor,
+        idempotency_key=state.idempotency_key,
+    )
+
+
+def _route_decision_node(state: AgentState, ctx: GraphContext) -> AgentState:
+    routed = route_decision(state)
+    if routed.next_action == NextAction.EXECUTE_READ_TOOL:
+        ctx.emit(f"🔧 Executing: {routed.selected_tool}")
+    elif routed.next_action == NextAction.EXECUTE_WRITE_TOOL:
+        ctx.emit(f"⚠️ Write action requires approval: {routed.selected_tool}")
+    else:
+        ctx.emit("💬 Generating response...")
+    return routed
+
+
+def _execute_read_tool_node(state: AgentState, ctx: GraphContext) -> AgentState:
+    return execute_read_tool(
+        state,
+        ctx.require("tool_registry"),
+        policy=ctx.get("retry_policy", DEFAULT_RETRY_POLICY),
+        ctx=ctx,
+    )
+
+
+def _execute_write_tool_node(state: AgentState, ctx: GraphContext) -> AgentState:
+    return execute_write_tool(
+        state,
+        ctx.require("tool_registry"),
+        policy=ctx.get("retry_policy", DEFAULT_RETRY_POLICY),
+        ctx=ctx,
+    )
+
+
+def _generate_response_node(state: AgentState, ctx: GraphContext) -> AgentState:
+    return generate_response(state, ctx.require("message"), ctx.get("provider"))
+
+
+def _format_response_node(state: AgentState, ctx: GraphContext) -> AgentState:
+    formatted = format_response(state)
+    ctx.emit("✓ Done")
+    return formatted
+
+
+def build_graph() -> Graph:
+    """The single-agent graph. AWAIT_APPROVAL is terminal *and* re-enterable:
+    `resume()` restarts the driver from that same node once approval is set."""
+    return (
+        Graph("single_agent")
+        .add_node(NextAction.PARSE_INTENT, _parse_intent_node)
+        .add_node(NextAction.ROUTE_DECISION, _route_decision_node)
+        .add_node(NextAction.EXECUTE_READ_TOOL, _execute_read_tool_node)
+        .add_node(NextAction.EXECUTE_WRITE_TOOL, _execute_write_tool_node)
+        .add_node(NextAction.GENERATE_RESPONSE, _generate_response_node)
+        .add_node(NextAction.FORMAT_RESPONSE, _format_response_node)
+        .add_terminal(NextAction.DONE, NextAction.AWAIT_APPROVAL)
+    )
+
+
+GRAPH = build_graph()
 
 
 def run(
@@ -332,42 +497,55 @@ def run(
     history: list[dict] | None = None,
     provider: "LLMProvider | None" = None,
     on_status: "StatusCallback | None" = None,
+    *,
+    actor=None,
+    request_id: str | None = None,
+    trace=None,
+    retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
 ) -> AgentState:
     """Drive a request from raw message through to a final or
     approval-pending AgentState."""
-
-    def emit(status: str) -> None:
-        if on_status:
-            on_status(status)
-
-    emit("🔍 Analyzing your request...")
-    state = parse_intent(message, classify, history)
-    emit(f"✓ Intent: {state.intent.upper()}")
-
-    state = route_decision(state)
-
-    if state.next_action == NextAction.EXECUTE_READ_TOOL:
-        emit(f"🔧 Executing: {state.selected_tool}")
-        state = execute_read_tool(state, tool_registry)
-    elif state.next_action == NextAction.EXECUTE_WRITE_TOOL:
-        emit(f"⚠️ Write action requires approval: {state.selected_tool}")
-        state = execute_write_tool(state, tool_registry)
-    elif state.next_action == NextAction.GENERATE_RESPONSE:
-        emit("💬 Generating response...")
-        state = generate_response(state, message, provider)
-
-    if state.next_action == NextAction.AWAIT_APPROVAL:
-        return state
-
-    return format_response(state)
+    ctx = GraphContext(
+        trace=trace,
+        message=message,
+        tool_registry=tool_registry,
+        classify=classify,
+        history=history,
+        provider=provider,
+        on_status=on_status,
+        retry_policy=retry_policy,
+    )
+    initial = AgentState(
+        intent="unknown",
+        next_action=NextAction.PARSE_INTENT,
+        request_id=request_id,
+        actor=actor,
+    )
+    return GRAPH.invoke(initial, ctx)
 
 
-def resume(state: AgentState, tool_registry: ToolRegistry) -> AgentState:
+def resume(
+    state: AgentState,
+    tool_registry: ToolRegistry,
+    *,
+    on_status: "StatusCallback | None" = None,
+    trace=None,
+    retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+) -> AgentState:
     """Continue a write-tool flow after /approve or /reject has set
-    `state.approved`."""
+    `state.approved`. Re-enters the same graph at EXECUTE_WRITE_TOOL."""
     if state.next_action != NextAction.AWAIT_APPROVAL:
         raise ValueError(
             f"resume() called on a state that is not awaiting approval: {state.next_action}"
         )
-    state = execute_write_tool(state, tool_registry)
-    return format_response(state)
+    ctx = GraphContext(
+        trace=trace,
+        message="",
+        tool_registry=tool_registry,
+        on_status=on_status,
+        retry_policy=retry_policy,
+    )
+    return GRAPH.invoke(
+        evolve(state, next_action=NextAction.EXECUTE_WRITE_TOOL),
+        ctx,
+    )

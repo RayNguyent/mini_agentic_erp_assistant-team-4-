@@ -1,0 +1,23 @@
+[
+  {
+    "milestone_id": "MS-001",
+    "project_code": "PRJ-001",
+    "label": "Sprint 4 — Purchase-to-pay & vendor onboarding",
+    "start_date": "2026-07-13",
+    "end_date": "2026-07-24"
+  },
+  {
+    "milestone_id": "MS-002",
+    "project_code": "PRJ-001",
+    "label": "Sprint 5 — Reporting",
+    "start_date": "2026-07-27",
+    "end_date": "2026-08-07"
+  },
+  {
+    "milestone_id": "MS-003",
+    "project_code": "PRJ-003",
+    "label": "UAT — Chart of accounts sign-off",
+    "start_date": "2026-08-17",
+    "end_date": "2026-08-28"
+  }
+]

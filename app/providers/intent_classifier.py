@@ -18,13 +18,16 @@ Classify the user's message into exactly one of these intents:
 - project_status: asking about a project's overall status
 - list_risks: asking to see/list risks for a project
 - create_risk: asking to create/add/log a new risk for a project
-- unsupported: anything else (refuse rather than guess)
+- list_project_tasks: asking to see/list tasks for a project
+- sprint_progress: asking about sprint/iteration progress or velocity
+- budget_summary: asking about budget, cost, spend, or variance
+- unsupported: anything else, including document/policy questions (refuse rather than guess)
 
 If a project code matching the pattern LETTERS-NUMBERS (e.g. PRJ-001) appears in the
 message, extract it; otherwise use null.
 
 Respond with ONLY a JSON object of this exact shape, no other text:
-{"intent": "<one of the four values above>", "project_code": "<code or null>"}
+{"intent": "<one of the values above>", "project_code": "<code or null>"}
 """
 
 
@@ -36,10 +39,15 @@ TOOLS AVAILABLE:
 - get_project_status: When user asks to CHECK, VIEW, LOOK UP, or GET STATUS of a project
 - list_risks: When user asks to VIEW, LIST, SHOW, or SEE risks for a project
 - create_risk: When user wants to ADD, CREATE, LOG, RECORD, or SUBMIT a NEW risk to a project
+- list_project_tasks: When user asks to VIEW, LIST, or SHOW tasks (including blocked/overdue)
+- get_sprint_progress: When user asks about sprint, iteration, or velocity progress
+- get_budget_summary: When user asks about budget, cost, spend, or variance
 
 IMPORTANT:
 - If the user wants to MODIFY/WRITE/CREATE something, use create_risk
-- If the user just wants to VIEW/READ/LIST information, use get_project_status or list_risks
+- If the user just wants to VIEW/READ/LIST information, use the matching read tool
+- If the question is about policy, rationale, "why", or history rather than live data,
+  do NOT call any tool — that is a document question, not an ERP lookup
 - If none apply, do NOT call any tool
 - NEVER reply in prose to ask the user for a risk's title, severity, description, or project.
   A bare "add a risk" is already enough to call create_risk: pass whatever fields the user gave
@@ -101,11 +109,15 @@ def _normalize_arguments(arguments: dict) -> dict:
     return normalized
 
 
-def make_tool_calling_classifier(provider: LLMProvider) -> IntentClassifier:
+def make_tool_calling_classifier(
+    provider: LLMProvider, fallback: IntentClassifier = default_classify
+) -> IntentClassifier:
     """Wraps an LLMProvider's tool-calling ability as an IntentClassifier.
 
     Hands the model the real tool schemas and trusts its decision-making.
-    Only falls back to unsupported if the model declines or errors.
+    Falls back to the deterministic classifier on a provider error or an
+    unknown tool name, so a model outage never breaks routing; only an
+    explicit decline (call is None) is treated as genuinely unsupported.
     """
     tools = get_openai_tool_specs()
 
@@ -115,8 +127,8 @@ def make_tool_calling_classifier(provider: LLMProvider) -> IntentClassifier:
                 message, tools=tools, system=_TOOL_CALL_SYSTEM_PROMPT, history=history
             )
         except ToolError as exc:
-            logger.warning("LLM provider error: %s (returning unsupported)", exc)
-            return "unsupported", {}
+            logger.warning("LLM provider error: %s (falling back)", exc)
+            return fallback(message, history)
 
         if call is None:
             logger.info("LLM declined to call any tool")
@@ -124,8 +136,8 @@ def make_tool_calling_classifier(provider: LLMProvider) -> IntentClassifier:
 
         intent = _TOOL_NAME_TO_INTENT.get(call.name)
         if intent is None:
-            logger.warning("LLM called unknown tool: %s (returning unsupported)", call.name)
-            return "unsupported", {}
+            logger.warning("LLM called unknown tool: %s (falling back)", call.name)
+            return fallback(message, history)
 
         arguments = _normalize_arguments(call.arguments)
         logger.info("LLM classified: intent=%s project_code=%s", intent, arguments.get("project_code"))
@@ -137,12 +149,21 @@ def make_tool_calling_classifier(provider: LLMProvider) -> IntentClassifier:
 def get_default_classifier(settings: ProviderSettings | None = None) -> IntentClassifier:
     """Reads provider config and returns whichever classifier is configured."""
     settings = settings or ProviderSettings.from_env()
-    if settings.llm_provider == "openai" and settings.openai_api_key:
+    if not settings.is_live:
+        return default_classify
+
+    if settings.llm_provider == "ollama":
+        from app.providers.ollama_provider import OllamaProvider
+
+        provider = OllamaProvider(
+            model=settings.openai_model, base_url=settings.resolved_base_url,
+            timeout_s=settings.openai_timeout_s,
+        )
+    else:
         provider = OpenAIProvider(
             api_key=settings.openai_api_key,
             model=settings.openai_model,
-            base_url=settings.openai_base_url,
+            base_url=settings.resolved_base_url,
             timeout_s=settings.openai_timeout_s,
         )
-        return make_tool_calling_classifier(provider)
-    return default_classify
+    return make_tool_calling_classifier(provider)

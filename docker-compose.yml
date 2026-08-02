@@ -1,0 +1,50 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # Deterministic offline profile by default — override to demo a live
+      # provider. See .env.example for the full list.
+      LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      EMBEDDINGS_ENABLED: ${EMBEDDINGS_ENABLED:-false}
+      AUTH_TOKENS_JSON: ${AUTH_TOKENS_JSON:-}
+    # Deliberately no volume mount. Mounting the whole ./data directory would
+    # shadow the RAG index and Chroma collection baked into the image at
+    # build time (`ingest --rebuild` in Dockerfile) with an empty host
+    # directory, since data/index/ and data/chroma/ are gitignored and won't
+    # exist on a fresh clone. Mounting individual log files
+    # (data/audit.jsonl, data/traces.jsonl) instead avoids that, but Docker
+    # creates a missing bind-mount *file* target as a *directory* if it
+    # doesn't already exist on the host — which would break AuditLog's
+    # `path.open("a")` on first boot. Audit/trace logs are therefore
+    # ephemeral per-container in this default compose file (readable via
+    # `docker compose exec api cat data/audit.jsonl` while running, or
+    # `docker cp` after). To persist them across restarts, create the two
+    # files on the host first (`touch data/audit.jsonl data/traces.jsonl`),
+    # then add the mounts back manually.
+    healthcheck:
+      # `python` alone is not guaranteed to resolve to anything —  the app
+      # only runs inside uv's venv (`uv run uvicorn ...`); `uv run` is what
+      # guarantees the same interpreter the app itself uses.
+      test: ["CMD", "uv", "run", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      api:
+        condition: service_healthy

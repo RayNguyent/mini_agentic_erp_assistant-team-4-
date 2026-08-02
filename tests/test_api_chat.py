@@ -56,14 +56,15 @@ def test_read_only_requests_carry_no_risk_draft(client):
     assert response.json()["risk_draft"] is None
 
 
-def test_unsupported_request_scenario_is_a_clean_refusal(client):
+def test_unsupported_request_scenario_gets_a_helpful_response(client):
     response = client.post("/chat", json={"message": "What's the weather today?"})
 
     assert response.status_code == 200
     body = response.json()
-    assert body["error_code"] == "UNSUPPORTED_INTENT"
+    assert body["error_code"] is None
     assert body["tool_used"] is None
     assert body["approval_required"] is False
+    assert body["answer"]
 
 
 def test_unknown_project_reports_not_found_without_failing_the_request(client):

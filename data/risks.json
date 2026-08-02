@@ -10,7 +10,7 @@
   },
   {
     "id": "RISK-2",
-    "project_code": "PRJ-002",
+    "project_code": "PRJ-001",
     "title": "Key engineer on leave",
     "severity": "low",
     "status": "Mitigated",

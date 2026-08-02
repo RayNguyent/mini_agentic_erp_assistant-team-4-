@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes import router
 from app.approvals.store import ApprovalNotFoundError
+from app.security.auth import AuthError
 
 load_dotenv()
 
@@ -29,3 +30,10 @@ app.include_router(router)
 @app.exception_handler(ApprovalNotFoundError)
 def approval_not_found_handler(request: Request, exc: ApprovalNotFoundError) -> JSONResponse:
     return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(AuthError)
+def auth_error_handler(request: Request, exc: AuthError) -> JSONResponse:
+    return JSONResponse(
+        status_code=401, content={"detail": str(exc)}, headers={"WWW-Authenticate": "Bearer"}
+    )

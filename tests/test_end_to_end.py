@@ -44,4 +44,5 @@ def test_unsupported_request_scenario():
     registry = build_default_registry()
     state = run("What's the weather today?", registry)
     assert state.next_action == NextAction.DONE
-    assert state.error_code == "UNSUPPORTED_INTENT"
+    assert state.error_code is None
+    assert state.answer

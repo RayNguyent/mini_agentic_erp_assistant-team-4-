@@ -10,6 +10,13 @@ class ErrorCode(str, Enum):
     APPROVAL_REJECTED = "APPROVAL_REJECTED"
     UNKNOWN = "UNKNOWN"
 
+    # Spec-mandated normalized outcomes (final-project.pdf §9 "Odoo adapter
+    # acceptance rules") — a provider port must collapse vendor-specific
+    # failures onto this small typed set rather than leaking raw exceptions.
+    FORBIDDEN = "FORBIDDEN"
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+    NOT_SUPPORTED = "NOT_SUPPORTED"
+
 
 class ToolError(Exception):
     """Base class for all tool execution errors."""
@@ -43,6 +50,29 @@ class NotFoundError(NonRetryableToolError):
 
 class ToolValidationError(NonRetryableToolError):
     code = ErrorCode.VALIDATION_ERROR
+
+
+class ForbiddenError(NonRetryableToolError):
+    """The caller is identified but lacks the permission this action requires.
+    Distinct from NotFoundError: the resource exists, the caller may not see it."""
+
+    code = ErrorCode.FORBIDDEN
+
+
+class NotConfiguredError(NonRetryableToolError):
+    """The requested data exists in principle but this deployment has no
+    source configured for it (e.g. no budget module wired up). Returned
+    instead of a zero/empty value, which would look like a real answer."""
+
+    code = ErrorCode.NOT_CONFIGURED
+
+
+class NotSupportedError(NonRetryableToolError):
+    """The requested capability is not available in the current provider
+    profile (e.g. a risk register model not installed). Distinct from
+    NOT_CONFIGURED: this is a capability gap, not a missing setting."""
+
+    code = ErrorCode.NOT_SUPPORTED
 
 
 class NonRetryableProviderError(NonRetryableToolError):

@@ -1,0 +1,74 @@
+[
+  {
+    "task_id": "TASK-001",
+    "project_code": "PRJ-001",
+    "title": "Configure vendor onboarding workflow",
+    "state": "done",
+    "milestone_id": "MS-001",
+    "deadline": "2026-07-18"
+  },
+  {
+    "task_id": "TASK-002",
+    "project_code": "PRJ-001",
+    "title": "Migrate purchase order approval matrix",
+    "state": "done",
+    "milestone_id": "MS-001",
+    "deadline": "2026-07-20"
+  },
+  {
+    "task_id": "TASK-003",
+    "project_code": "PRJ-001",
+    "title": "Vendor bulk-sync throttling fix",
+    "state": "in_progress",
+    "milestone_id": "MS-001",
+    "deadline": "2026-07-22"
+  },
+  {
+    "task_id": "TASK-004",
+    "project_code": "PRJ-001",
+    "title": "Purchase-to-pay UAT script review",
+    "state": "blocked",
+    "milestone_id": "MS-001",
+    "deadline": "2026-07-23"
+  },
+  {
+    "task_id": "TASK-005",
+    "project_code": "PRJ-001",
+    "title": "Reporting warehouse feed schema draft",
+    "state": "open",
+    "milestone_id": "MS-002",
+    "deadline": "2026-08-05"
+  },
+  {
+    "task_id": "TASK-006",
+    "project_code": "PRJ-001",
+    "title": "Legacy CSV job decommission checklist",
+    "state": "open",
+    "milestone_id": null,
+    "deadline": null
+  },
+  {
+    "task_id": "TASK-007",
+    "project_code": "PRJ-001",
+    "title": "Fix stale vendor onboarding approval step",
+    "state": "open",
+    "milestone_id": "MS-001",
+    "deadline": "2026-07-21"
+  },
+  {
+    "task_id": "TASK-008",
+    "project_code": "PRJ-002",
+    "title": "Robotics vendor reference checks",
+    "state": "cancelled",
+    "milestone_id": null,
+    "deadline": "2026-06-15"
+  },
+  {
+    "task_id": "TASK-009",
+    "project_code": "PRJ-003",
+    "title": "Chart of accounts sign-off review",
+    "state": "in_progress",
+    "milestone_id": "MS-003",
+    "deadline": "2026-08-20"
+  }
+]

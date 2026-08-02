@@ -98,8 +98,8 @@ def test_route_decision_selects_write_tool_and_requires_approval():
 def test_route_decision_rejects_unsupported_intent():
     state = parse_intent("What's the weather today?")
     state = route_decision(state)
-    assert state.next_action == NextAction.FORMAT_RESPONSE
-    assert state.error_code == "UNSUPPORTED_INTENT"
+    assert state.next_action == NextAction.GENERATE_RESPONSE
+    assert state.error_code is None
     assert state.tool_output is None
 
 
@@ -247,7 +247,7 @@ def test_run_unsupported_request_is_clean_refusal():
     registry = FakeRegistry({})
     state = run("What's the weather today?", registry)
     assert state.next_action == NextAction.DONE
-    assert state.error_code == "UNSUPPORTED_INTENT"
+    assert state.error_code is None
     assert state.tool_output is None
     assert state.answer
 
