@@ -48,6 +48,7 @@ let authToken: string | null = null;
 
 export function setAuthToken(token: string | null) {
   authToken = token;
+  console.log("Auth token set to:", token);
 }
 
 export function getAuthToken(): string | null {
@@ -55,7 +56,9 @@ export function getAuthToken(): string | null {
 }
 
 function authHeaders(): Record<string, string> {
-  return authToken ? { Authorization: `Bearer ${authToken}` } : {};
+  const headers = authToken ? { Authorization: `Bearer ${authToken}` } : {};
+  console.log("Auth headers:", headers, "Token:", authToken);
+  return headers;
 }
 
 export class ApiError extends Error {

@@ -16,6 +16,7 @@ from app.memory.policy import (
     expire_stale,
 )
 from app.memory.short_term import ConversationBuffer, Turn
+from app.memory.store import MemoryStore, build_default_memory_store
 from app.memory.working import WorkingItem, WorkingMemory
 
 __all__ = [
@@ -25,10 +26,12 @@ __all__ = [
     "MemoryCandidate",
     "MemoryDecision",
     "MemoryEntry",
+    "MemoryStore",
     "Turn",
     "WorkingItem",
     "WorkingMemory",
     "apply",
+    "build_default_memory_store",
     "decide",
     "expire_stale",
     "new_memory_id",

@@ -50,16 +50,44 @@ class ScopedRegistry:
         return self._allowed
 
 
+# What each permission actually lets someone do, in plain language — shown to
+# the user instead of the raw permission string.
+_PERMISSION_LABELS: dict[str, str] = {
+    "project.read": "view project details",
+    "project.risk.read": "view project risks",
+    "project.risk.create": "create or edit project risks",
+    "project.finance.read": "view budget and financial data",
+    "document.read": "read project documents",
+}
+
+
+def _humanize_role(role: str) -> str:
+    return role.replace("_", " ").title()
+
+
 def denied(agent: str, permission: str, actor) -> AgentResult:
-    """A refusal that names the missing permission without leaking the result."""
-    who = f"role '{actor.role}'" if actor is not None else "an unidentified caller"
+    """A refusal that explains, in plain language, what the caller can't do
+    and who could do it instead — not just the raw permission string."""
+    from app.security.permissions import PERMISSIONS  # local import: keeps this module decoupled from app.security at load time
+
+    label = _PERMISSION_LABELS.get(permission, f"do this (requires '{permission}')")
+    who = f"Your role ('{_humanize_role(actor.role)}')" if actor is not None else "You"
+    message = f"{who} can't {label}."
+
+    holder_roles = sorted(role for role, perms in PERMISSIONS.items() if permission in perms)
+    if holder_roles:
+        readable = (
+            _humanize_role(holder_roles[0])
+            if len(holder_roles) == 1
+            else ", ".join(_humanize_role(r) for r in holder_roles[:-1]) + f" or {_humanize_role(holder_roles[-1])}"
+        )
+        message += f" Ask someone with the {readable} role, or sign in with a different role, for this."
+
     return AgentResult(
         agent=agent,
         ok=False,
         error_code=ErrorCode.FORBIDDEN,
-        error_message=(
-            f"{who} does not hold '{permission}', which is required for this request."
-        ),
+        error_message=message,
     )
 
 

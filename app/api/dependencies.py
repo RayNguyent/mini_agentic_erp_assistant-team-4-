@@ -20,7 +20,10 @@ from app.tools.registry import build_default_registry
 # These must stay process-lifetime singletons, not per-request. The approval
 # store holds pending states between the /chat that creates one and the
 # /approve that resolves it, and MockERPProvider keeps created risks in memory
-# only — rebuilding either per request would silently lose both.
+# only — rebuilding either per request would silently lose both. The memory
+# store needs the same treatment: long-term memory has no persistence besides
+# this process's in-memory index (plus its JSONL log), and working memory is
+# explicitly session/process-scoped by design (app.memory.working).
 
 
 @lru_cache(maxsize=1)
@@ -90,6 +93,13 @@ def get_trace_store():
     from app.observability.trace import build_default_trace_store
 
     return build_default_trace_store()
+
+
+@lru_cache(maxsize=1)
+def get_memory_store():
+    from app.memory.store import build_default_memory_store
+
+    return build_default_memory_store()
 
 
 def get_current_actor(

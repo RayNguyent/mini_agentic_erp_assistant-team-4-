@@ -112,3 +112,22 @@ def test_reusing_a_resolved_approval_id_returns_404(client):
     second = client.post("/approve", json={"approval_id": approval_id})
 
     assert second.status_code == 404
+
+
+def test_approve_flow_saves_a_risk_created_fact(client):
+    from app.api.dependencies import get_memory_store
+    from app.api.main import app
+
+    approval_id = _pending_create_risk(client)
+    response = client.post(
+        "/approve",
+        json={"approval_id": approval_id, "tool_input": {"risk_payload": RISK_PAYLOAD}},
+    )
+    assert response.json()["error_code"] is None
+
+    memory = app.dependency_overrides[get_memory_store]()
+    entries = memory.get_long_term("test.pm").entries
+    assert any(
+        e.source == "tool_result" and e.subject == "PRJ-001" and "Scope creep" in e.text
+        for e in entries
+    )

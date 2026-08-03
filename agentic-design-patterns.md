@@ -63,8 +63,12 @@
 
 - **Citation-required grounding + explicit refusal** — the model must cite a retrieved source id for any claim, and refuse/ask for clarification when it can't. Enforced at the schema level, not just prompted for.
 
-- **ACL filtering before generation, not after** — restricted document chunks must be excluded from the retrieval set the model sees; never rely on the model to "not mention" content it was already shown.
+- **ACL (Access Control List) filtering before generation, not after** — restricted document chunks must be excluded from the retrieval set the model sees; never rely on the model to "not mention" content it was already shown.
   → final-project spec §2 RAG layer, §6 quality gate "RAG quality"
+
+  - **How ACL works**: Every document chunk is tagged with a classification (public, internal, finance, restricted, ordered least-to-most sensitive). Each role has a clearance (set of classifications it can read). Filtering happens at the retrieval boundary—before BM25/vector fusion—so denied chunks never enter the prompt. Unknown/absent role defaults to least-privilege (public-only). **Why at recall, not at answer**: If the model was shown restricted content, refusing to cite it is a *request*, not a control. ACL enforces confidentiality structurally.
+  - **Auditability**: `filter_chunks()` returns both visible and denied chunk IDs so the trace records which chunks were filtered out and why, distinguishing "zero restricted results" from "filter never ran." Enables compliance audit trails.
+  → `app/rag/acl.py`, `app/rag/retrieve.py` (ACL filtering at recall stage)
 
 ## MCP-style tool boundary
 
@@ -76,6 +80,22 @@
 
 - **Normalized provider-error taxonomy** — provider failures collapse to a small typed set (`NOT_FOUND`, `FORBIDDEN`, `NOT_CONFIGURED`, `NOT_SUPPORTED`, `TIMEOUT`, `PROVIDER_ERROR`) instead of leaking raw vendor exceptions up through the tool boundary. Callers branch on the typed outcome, not on string-matching an error message.
   → final-project spec §9 "Odoo adapter acceptance rules"
+
+## Multi-agent orchestration
+
+- **Confinement by structure, not prompting** — each specialist agent declares a hardwired `allowed_tools` allowlist and `required_permission`. A prompt injection can never convince DocResearcher to call `create_risk` because the tool doesn't exist in its scoped registry. Security is structural, not advisory.
+  → `app/agents/base.py` (SpecialistAgent protocol, ScopedRegistry), `app/agents/doc_researcher.py`, `app/agents/erp_analyst.py`
+
+- **Supervisor plans specialist dispatch** — a supervisor converts the user's request into a typed `AgentStep` list (not free text). Planning is deterministic (keyword + intent matching) with LLM-fallback, so the offline profile plans as sensibly as the LLM path. Plan is a list of `{agent, rationale, inputs}` tuples the executor follows structurally.
+  → `app/agents/supervisor.py` (plan_deterministic, plan), `app/agents/graph.py` (_supervise_node)
+
+- **Fault isolation + partial answers** — if one specialist fails, the multi-agent graph doesn't cascade; the synthesizer composes results from the agents that succeeded. A network error in DocResearcher doesn't prevent ERPAnalyst's answer from being shown.
+  → `app/agents/graph.py` (_run_agents_node, _synthesize_node)
+
+- **Reuses existing safety guarantees** — approval gates, retry logic, and tool execution are identical to the single-agent path, so write safety doesn't fork into two implementations. A `create_risk` approval works the same whether the request came from a single-agent or multi-agent graph.
+  → `app/agents/graph.py` comments line 15–18 ("Approval reuses the exact mechanism...")
+
+- **Why multi-agent beats single agent**: (1) Tool access is scoped—a single agent with all tools at once is a larger attack surface; (2) routing is explicit and testable—the supervisor's plan is auditable; (3) token budget is focused—each specialist gets only its relevant context, not everything; (4) failures degrade instead of cascade—missing doc evidence doesn't prevent ERP data from being shown.
 
 ## ERP / external-system provider plugin
 
@@ -96,11 +116,20 @@
 - **Three distinct memory layers, not one blob** — short-term conversation state, working project/task memory, and long-term semantic memory each have separate write/update/expire/compaction rules. Collapsing them into "the chat history" loses the ability to reason about staleness or provenance.
   → final-project spec §2 "Adaptive memory"
 
+  - **Short-term (conversation buffer)**: The current exchange. Critical facts that would confuse the model if lost mid-turn (pending approvals, safety flags) survive compaction verbatim; everything else summarizes when turns exceed the budget. Never persists across sessions. **Why**: Captures this turn's context without cluttering long-term storage; allow-listed compaction prevents safety-critical state from silently disappearing.
+
+  - **Working memory**: Session task state, TTL-expiring (~30 minutes). Holds active code, last tool result, in-progress approvals. Long enough for one coherent working session, short enough to not mislead if work pauses and resumes hours later. **Why**: Keeps tool outputs and intermediate state available without forcing them into durable storage or bloating every prompt.
+
+  - **Long-term memory**: Durable semantic facts (~90 days), indexed and recalled. Facts that belong across sessions (user preferences, project architecture, past findings) with full provenance (source, confidence, timestamp). Every write decision (save/update/reject) is logged durably so poisoning attempts are auditable. Uses same embedding provider as RAG for semantic recall. **Why**: The one place to build context that survives a restart or carries into future conversations. Separate from episodic (per-conversation) or flat logs because semantic search + scoped recall (by subject) defeats noise.
+
 - **Provenance-tagged memory writes** — every stored memory item records where it came from (user turn, tool result, retrieved doc) so a later "stale" or "poisoned" memory can be identified and rejected with evidence, not guesswork.
   → final-project spec, minimum demo scenario "Memory policy"
 
 - **Untrusted memory candidates** — content proposed for long-term memory (especially anything sourced from tool output or web search) is validated before being written, the same way retrieved documents are treated as untrusted before being cited.
   → final-project spec §7 "External-content isolation"
+
+- **Memory-RAG integration**: Both are parallel retrieval sources fed into the same context budget. Long-term memory (semantic facts recalled from user's prior sessions) ranks *lower* in priority than retrieved evidence (documents grounded in the corpus). RAG retrieval is never blocked by memory and vice versa; when token budget is tight, memory is dropped first because grounding matters more than context. Both use the same embedding provider so both degrade gracefully when embeddings unavailable.
+  → `app/memory/store.py`, `app/context/builder.py` Priority enum
 
 ## Evaluation & observability
 

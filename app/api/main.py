@@ -19,7 +19,7 @@ app = FastAPI(title="Mini Agentic ERP Assistant")
 # this API directly, including reading the /chat/stream SSE response.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://192.168.17.110:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

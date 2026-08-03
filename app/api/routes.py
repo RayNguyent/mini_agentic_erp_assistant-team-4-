@@ -12,6 +12,7 @@ from app.api.dependencies import (
     get_audit_log,
     get_current_actor,
     get_llm_provider,
+    get_memory_store,
     get_retriever,
     get_tool_registry,
     get_trace_store,
@@ -28,6 +29,7 @@ from app.api.schemas import (
     ToolsResponse,
 )
 from app.approvals.store import ApprovalStore
+from app.memory.store import MemoryStore
 from app.observability.trace import TraceRecorder, TraceStore
 from app.providers.base import LLMProvider
 from app.providers.config import ProviderSettings
@@ -228,6 +230,7 @@ def _run_chat(
     agents: dict,
     audit: AuditLog,
     trace_store: TraceStore,
+    memory: MemoryStore,
     on_status=None,
 ) -> AgentState:
     request_id = str(uuid.uuid4())
@@ -255,6 +258,8 @@ def _run_chat(
         trace=recorder,
         agents=agents,
         authorize=check_permission,
+        memory_store=memory,
+        audit_log=audit,
     )
 
     for step_name, result in state.agent_results.items():
@@ -285,8 +290,9 @@ def chat(
     agents: dict = Depends(get_agent_registry),
     audit: AuditLog = Depends(get_audit_log),
     trace_store: TraceStore = Depends(get_trace_store),
+    memory: MemoryStore = Depends(get_memory_store),
 ) -> ChatResponse:
-    state = _run_chat(request, actor, registry, retriever, store, provider, agents, audit, trace_store)
+    state = _run_chat(request, actor, registry, retriever, store, provider, agents, audit, trace_store, memory)
 
     if state.next_action == NextAction.AWAIT_APPROVAL:
         approval_id = store.create(state)
@@ -308,13 +314,14 @@ def chat_stream(
     agents: dict = Depends(get_agent_registry),
     audit: AuditLog = Depends(get_audit_log),
     trace_store: TraceStore = Depends(get_trace_store),
+    memory: MemoryStore = Depends(get_memory_store),
 ) -> StreamingResponse:
     statuses: list[str] = []
 
     def on_status(status: str) -> None:
         statuses.append(status)
 
-    state = _run_chat(request, actor, registry, retriever, store, provider, agents, audit, trace_store, on_status=on_status)
+    state = _run_chat(request, actor, registry, retriever, store, provider, agents, audit, trace_store, memory, on_status=on_status)
 
     if state.next_action == NextAction.AWAIT_APPROVAL:
         approval_id = store.create(state)
@@ -337,6 +344,7 @@ def _resume(
     agents: dict,
     audit: AuditLog,
     trace_store: TraceStore,
+    memory: MemoryStore,
 ) -> AgentState:
     pending = store.pop(request_approval_id)
     merged_input = {**(pending.tool_input or {}), **(extra_tool_input or {})}
@@ -347,6 +355,7 @@ def _resume(
     if state.route == Route.MULTI_AGENT:
         resumed = resume_multi_agent(
             state, tool_registry=registry, agents=agents, authorize=check_permission, trace=recorder,
+            memory_store=memory, audit_log=audit,
         )
     else:
         from app.runtime import resume
@@ -375,8 +384,9 @@ def approve(
     agents: dict = Depends(get_agent_registry),
     audit: AuditLog = Depends(get_audit_log),
     trace_store: TraceStore = Depends(get_trace_store),
+    memory: MemoryStore = Depends(get_memory_store),
 ) -> ChatResponse:
-    state = _resume(request.approval_id, True, request.tool_input, actor, registry, store, agents, audit, trace_store)
+    state = _resume(request.approval_id, True, request.tool_input, actor, registry, store, agents, audit, trace_store, memory)
     return _finished_response(state)
 
 
@@ -389,8 +399,9 @@ def approve_stream(
     agents: dict = Depends(get_agent_registry),
     audit: AuditLog = Depends(get_audit_log),
     trace_store: TraceStore = Depends(get_trace_store),
+    memory: MemoryStore = Depends(get_memory_store),
 ) -> StreamingResponse:
-    state = _resume(request.approval_id, True, request.tool_input, actor, registry, store, agents, audit, trace_store)
+    state = _resume(request.approval_id, True, request.tool_input, actor, registry, store, agents, audit, trace_store, memory)
     statuses = ["✅ Approval confirmed!", f"🔧 Executing: {state.selected_tool}"]
     return _stream_response(_finished_response(state), statuses=statuses)
 
@@ -404,8 +415,9 @@ def reject(
     agents: dict = Depends(get_agent_registry),
     audit: AuditLog = Depends(get_audit_log),
     trace_store: TraceStore = Depends(get_trace_store),
+    memory: MemoryStore = Depends(get_memory_store),
 ) -> ChatResponse:
-    state = _resume(request.approval_id, False, None, actor, registry, store, agents, audit, trace_store)
+    state = _resume(request.approval_id, False, None, actor, registry, store, agents, audit, trace_store, memory)
     return _finished_response(state)
 
 
@@ -418,6 +430,7 @@ def reject_stream(
     agents: dict = Depends(get_agent_registry),
     audit: AuditLog = Depends(get_audit_log),
     trace_store: TraceStore = Depends(get_trace_store),
+    memory: MemoryStore = Depends(get_memory_store),
 ) -> StreamingResponse:
-    state = _resume(request.approval_id, False, None, actor, registry, store, agents, audit, trace_store)
+    state = _resume(request.approval_id, False, None, actor, registry, store, agents, audit, trace_store, memory)
     return _stream_response(_finished_response(state))

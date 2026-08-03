@@ -118,6 +118,24 @@ class TraceRecorder:
                  attributes={"matched_pattern": matched_pattern})
         )
 
+    def record_memory_decision(self, decision, *, agent: str) -> None:
+        """One MemoryDecision (SAVE/UPDATE/IGNORE/EXPIRE/REJECT), as returned
+        by app.memory.store.MemoryStore.propose(). Recorded regardless of
+        action — a REJECT is exactly as important to see in a trace as a
+        SAVE."""
+        self._trace.spans.append(
+            Span(
+                kind="memory_decision", name=decision.action.value, started_at=time.time(), elapsed_ms=0.0,
+                attributes={
+                    "agent": agent,
+                    "reason": decision.reason,
+                    "source": decision.candidate.source,
+                    "subject": decision.candidate.subject,
+                    "target_memory_id": decision.target_memory_id,
+                },
+            )
+        )
+
     # --- lifecycle -----------------------------------------------------
 
     def finish(self, *, route: str | None = None, error: str | None = None) -> Trace:

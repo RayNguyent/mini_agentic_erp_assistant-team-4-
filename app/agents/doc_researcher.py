@@ -9,6 +9,7 @@ required permission (document read), and mapping RagState onto AgentResult.
 from app.agents.base import authorize, denied, timed
 from app.errors import ErrorCode
 from app.graph.engine import GraphContext
+from app.memory.policy import MemoryCandidate
 from app.rag.agentic import run_agentic_rag
 from app.state import AgentResult, AgentState, AgentStep
 
@@ -48,6 +49,8 @@ class DocResearcher:
                     context_log=rag_state.context_log,
                 )
 
+            self._remember(ctx, state, step, rag_state.answer)
+
             return AgentResult(
                 agent=self.name,
                 ok=True,
@@ -57,3 +60,25 @@ class DocResearcher:
             )
 
         return timed(self.name, _run)
+
+    def _remember(self, ctx: GraphContext, state: AgentState, step: AgentStep, answer: str) -> None:
+        memory_store = ctx.get("memory_store")
+        if memory_store is None or state.actor is None or not answer:
+            return
+
+        # source="document": grounded RAG answers are held to the stricter
+        # UNTRUSTED_SOURCES poisoning bar in app.memory.policy, by design — an
+        # LLM-generated synthesis is not an authenticated human statement,
+        # even though it went through citation verification first.
+        candidate = MemoryCandidate(
+            text=answer,
+            source="document",
+            confidence=0.7,
+            subject=step.inputs.get("project_code") or "general",
+        )
+        decision = memory_store.propose(state.actor.user_id, candidate)
+        if ctx.trace is not None:
+            ctx.trace.record_memory_decision(decision, agent=self.name)
+        audit = ctx.get("audit_log")
+        if audit is not None:
+            audit.memory_write(decision, actor=state.actor, request_id=state.request_id)

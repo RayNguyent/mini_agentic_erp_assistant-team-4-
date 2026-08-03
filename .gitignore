@@ -28,6 +28,7 @@ data/chroma/
 data/traces.jsonl
 data/audit.jsonl
 data/ingestion_log.jsonl
+data/memory.jsonl
 
 # Frontend
 frontend/node_modules/

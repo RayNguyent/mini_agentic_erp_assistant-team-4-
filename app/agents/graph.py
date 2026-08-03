@@ -164,6 +164,8 @@ def run_multi_agent(
     agents: dict[str, SpecialistAgent] | None = None,
     authorize=None,
     retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+    memory_store=None,
+    audit_log=None,
 ) -> AgentState:
     ctx = GraphContext(
         trace=trace,
@@ -176,6 +178,8 @@ def run_multi_agent(
         agents=agents,
         authorize=authorize,
         retry_policy=retry_policy,
+        memory_store=memory_store,
+        audit_log=audit_log,
     )
     initial = AgentState(
         intent="multi_agent",
@@ -196,6 +200,8 @@ def resume_multi_agent(
     agents: dict[str, SpecialistAgent] | None = None,
     authorize=None,
     retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+    memory_store=None,
+    audit_log=None,
 ) -> AgentState:
     """Continue a multi-agent run after /approve or /reject has set `approved`."""
     if state.next_action != NextAction.AWAIT_APPROVAL:
@@ -211,5 +217,7 @@ def resume_multi_agent(
         agents=agents,
         authorize=authorize,
         retry_policy=retry_policy,
+        memory_store=memory_store,
+        audit_log=audit_log,
     )
     return MULTI_AGENT_GRAPH.invoke(evolve(state, next_action=NextAction.RUN_AGENTS), ctx)

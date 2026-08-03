@@ -10,6 +10,7 @@ create_risk even if a prompt injection convinced the underlying model to try.
 from app.agents.base import ScopedRegistry, authorize_permission, denied, timed
 from app.graph.engine import GraphContext
 from app.graph.retry import RetryPolicy
+from app.memory.policy import MemoryCandidate
 from app.runtime import DEFAULT_RETRY_POLICY, READ_TOOLS, _run_tool_with_retry
 from app.state import AgentResult, AgentState, AgentStep, NextAction
 from app.tools.specs import permission_for
@@ -44,10 +45,16 @@ class ERPAnalyst:
 
         def _run() -> AgentResult:
             registry = ScopedRegistry(ctx.require("tool_registry"), self.allowed_tools)
+            tool_input = dict(step.inputs.get("tool_input") or {})
+            memory_store = ctx.get("memory_store")
+            if "project_code" not in tool_input and memory_store is not None and state.actor is not None:
+                default_code = memory_store.get_working(state.actor.user_id).get("active_project_code")
+                if default_code is not None:
+                    tool_input["project_code"] = default_code
             probe = AgentState(
                 intent="probe",
                 selected_tool=tool_name,
-                tool_input=step.inputs.get("tool_input") or {},
+                tool_input=tool_input,
                 next_action=NextAction.EXECUTE_READ_TOOL,
             )
             # `or`, not `ctx.get(key, default)`: a caller that explicitly
@@ -70,6 +77,8 @@ class ERPAnalyst:
                     retries=result_state.retry_count,
                 )
 
+            self._remember(memory_store, ctx, state, tool_name, tool_input, result_state.tool_output)
+
             return AgentResult(
                 agent=self.name,
                 ok=True,
@@ -80,6 +89,26 @@ class ERPAnalyst:
 
         return timed(self.name, _run)
 
+    def _remember(self, memory_store, ctx: GraphContext, state: AgentState, tool_name: str, tool_input: dict, tool_output: dict | None) -> None:
+        if memory_store is None or state.actor is None:
+            return
+        project_code = tool_input.get("project_code")
+        if project_code:
+            memory_store.set_working(state.actor.user_id, "active_project_code", project_code, source="tool_result")
+
+        candidate = MemoryCandidate(
+            text=_summarize_tool_output(tool_name, tool_output),
+            source="tool_result",
+            confidence=0.9,
+            subject=project_code or tool_name,
+        )
+        decision = memory_store.propose(state.actor.user_id, candidate)
+        if ctx.trace is not None:
+            ctx.trace.record_memory_decision(decision, agent=self.name)
+        audit = ctx.get("audit_log")
+        if audit is not None:
+            audit.memory_write(decision, actor=state.actor, request_id=state.request_id)
+
     def _resolve_tool(self, step: AgentStep) -> str | None:
         explicit = step.inputs.get("tool")
         if explicit in self.allowed_tools:
@@ -88,3 +117,16 @@ class ERPAnalyst:
         if intent in _INTENT_TO_TOOL:
             return _INTENT_TO_TOOL[intent]
         return None
+
+
+def _summarize_tool_output(tool_name: str, output: dict | None) -> str:
+    """A flat, deterministic string rendering — MemoryCandidate.text is a str,
+    not a dict, and this keeps the saved fact readable rather than a raw
+    Python repr."""
+    output = output or {}
+    project_code = output.get("project_code", "?")
+    fields = ", ".join(f"{k}={v}" for k, v in output.items() if k != "project_code")
+    text = f"{tool_name} for {project_code}"
+    if fields:
+        text += f": {fields}"
+    return text[:500]

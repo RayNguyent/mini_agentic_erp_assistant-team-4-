@@ -10,6 +10,7 @@ is a second place that gate could be gotten wrong.
 from app.agents.base import ScopedRegistry, authorize, denied, timed
 from app.errors import ErrorCode
 from app.graph.engine import GraphContext
+from app.memory.policy import MemoryCandidate
 from app.runtime import WRITE_TOOLS, execute_write_tool
 from app.state import AgentResult, AgentState, AgentStep, NextAction
 
@@ -48,7 +49,17 @@ class RiskWriter:
             result_state = execute_write_tool(probe, registry, ctx=ctx)
 
             if result_state.next_action == NextAction.AWAIT_APPROVAL:
+                # First pass, pre-approval: no memory write here. The real
+                # approval_id doesn't exist yet at this point — ApprovalStore
+                # .create() is only called later, in app.api.routes.chat(),
+                # once the whole graph suspends — so there is nothing to set
+                # pending_approval_id to yet.
                 return AgentResult(agent=self.name, ok=True, awaiting_approval=True)
+
+            # Resume pass (state.approved is not None): the approval decision
+            # has already been made, so any working-memory placeholder for it
+            # is stale regardless of outcome.
+            self._forget_pending_approval(ctx, state)
 
             if result_state.error_code is not None:
                 return AgentResult(
@@ -59,6 +70,8 @@ class RiskWriter:
                     error_message=result_state.error_message,
                 )
 
+            self._remember(ctx, state, tool_input, result_state.tool_output)
+
             return AgentResult(
                 agent=self.name,
                 ok=True,
@@ -67,6 +80,31 @@ class RiskWriter:
             )
 
         return timed(self.name, _run)
+
+    def _forget_pending_approval(self, ctx: GraphContext, state: AgentState) -> None:
+        memory_store = ctx.get("memory_store")
+        if memory_store is not None and state.actor is not None:
+            memory_store.clear_working(state.actor.user_id, "pending_approval_id")
+
+    def _remember(self, ctx: GraphContext, state: AgentState, tool_input: dict | None, tool_output: dict | None) -> None:
+        memory_store = ctx.get("memory_store")
+        if memory_store is None or state.actor is None:
+            return
+        tool_input = tool_input or {}
+        project_code = tool_input.get("project_code")
+        payload = tool_input.get("risk_payload") or {}
+        candidate = MemoryCandidate(
+            text=f"Risk created for {project_code}: {payload.get('title', '')} (severity {payload.get('severity', 'unknown')})",
+            source="tool_result",
+            confidence=0.95,
+            subject=project_code or "risk",
+        )
+        decision = memory_store.propose(state.actor.user_id, candidate)
+        if ctx.trace is not None:
+            ctx.trace.record_memory_decision(decision, agent=self.name)
+        audit = ctx.get("audit_log")
+        if audit is not None:
+            audit.memory_write(decision, actor=state.actor, request_id=state.request_id)
 
     @property
     def awaiting_approval_marker(self) -> str:

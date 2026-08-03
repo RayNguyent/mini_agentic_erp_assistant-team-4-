@@ -8,12 +8,14 @@ from app.api.dependencies import (
     get_audit_log,
     get_authenticator,
     get_intent_classifier,
+    get_memory_store,
     get_retriever,
     get_tool_registry,
     get_trace_store,
 )
 from app.api.main import app
 from app.approvals.store import build_default_store
+from app.memory.store import MemoryStore
 from app.observability.trace import TraceStore
 from app.rag.retrieve import Retriever
 from app.rag.store import ChunkStore
@@ -63,6 +65,7 @@ def client():
     audit._path.parent.mkdir(parents=True, exist_ok=True)
 
     trace_store = TraceStore(path=Path("data/.test-traces.jsonl"))
+    memory_store = MemoryStore(path=Path("data/.test-memory.jsonl"))
 
     app.dependency_overrides[get_tool_registry] = lambda: registry
     app.dependency_overrides[get_approval_store] = lambda: store
@@ -72,6 +75,7 @@ def client():
     app.dependency_overrides[get_authenticator] = lambda: authenticator
     app.dependency_overrides[get_audit_log] = lambda: audit
     app.dependency_overrides[get_trace_store] = lambda: trace_store
+    app.dependency_overrides[get_memory_store] = lambda: memory_store
 
     with TestClient(app, headers={"Authorization": f"Bearer {PM_TOKEN}"}) as test_client:
         yield test_client

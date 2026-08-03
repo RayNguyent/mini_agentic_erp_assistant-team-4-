@@ -26,7 +26,7 @@ AUDIT_LOG_PATH = Path("data/audit.jsonl")
 
 class AuditRow(BaseModel):
     timestamp: float
-    category: str  # "auth" | "tool_call" | "approval" | "blocked" | "response"
+    category: str  # "auth" | "tool_call" | "approval" | "blocked" | "response" | "memory_write"
     actor_id: str | None = None
     actor_role: str | None = None
     request_id: str | None = None
@@ -94,6 +94,22 @@ class AuditLog:
 
     def response(self, route: str, *, actor=None, request_id=None, detail=None) -> AuditRow:
         return self.record("response", route, "success", actor=actor, request_id=request_id, detail=detail)
+
+    def memory_write(self, decision, *, actor=None, request_id=None) -> AuditRow:
+        """`outcome` here is the MemoryDecision's action value (save/update/
+        ignore/expire/reject) — a source-specific vocabulary, same as
+        `approval`'s pending/approved/rejected differs from `tool_call`'s
+        success/error. A REJECT (poisoning attempt) is recorded exactly like
+        any other decision, not treated as an error outcome."""
+        return self.record(
+            "memory_write", decision.candidate.source, decision.action.value,
+            actor=actor, request_id=request_id,
+            detail={
+                "reason": decision.reason,
+                "subject": decision.candidate.subject,
+                "target_memory_id": decision.target_memory_id,
+            },
+        )
 
 
 def build_default_audit_log() -> AuditLog:

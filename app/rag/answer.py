@@ -32,11 +32,37 @@ logger = logging.getLogger(__name__)
 # safe at this corpus's current chunk sizes but was not actually a budget.
 DEFAULT_EVIDENCE_BUDGET_TOKENS = 2000
 
-REFUSAL_TEXT = (
-    "I couldn't find that in the project documents I have access to, so I won't "
-    "guess. Try rephrasing, or ask about project status, tasks, sprint progress, "
-    "budget, or risks — those I can look up directly."
-)
+# Short, user-facing phrasing per ERP tool — kept separate from
+# app.tools.specs._TOOL_DESCRIPTIONS (which is written for the LLM classifier,
+# not a chat reply) but sourced from the same tool names so this list can't
+# name a capability that doesn't actually exist.
+_CAPABILITY_BLURBS: dict[str, str] = {
+    "get_project_status": "project status",
+    "list_project_tasks": "tasks",
+    "get_sprint_progress": "sprint progress",
+    "get_budget_summary": "budget",
+    "list_risks": "risks",
+    "create_risk": "logging a new risk",
+}
+
+
+def _refusal_text() -> str:
+    from app.tools.specs import TOOL_META  # local import: avoids a hard app.rag -> app.tools coupling at module load
+
+    capabilities = [
+        blurb for name, blurb in _CAPABILITY_BLURBS.items() if name in TOOL_META
+    ]
+    listed = ", ".join(capabilities[:-1]) + f", or {capabilities[-1]}" if len(capabilities) > 1 else capabilities[0]
+    return (
+        "I couldn't find that in the project documents I have access to, so I won't guess. "
+        "Here's what I can help with:\n"
+        "- Answering questions grounded in the project documents I have access to\n"
+        f"- Looking up {listed} for a project\n"
+        "Try rephrasing, or ask about one of those directly."
+    )
+
+
+REFUSAL_TEXT = _refusal_text()
 
 SYSTEM_PROMPT = """You answer questions about project delivery using ONLY the \
 evidence blocks provided.
